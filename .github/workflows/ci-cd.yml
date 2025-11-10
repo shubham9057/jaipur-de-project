@@ -4,7 +4,7 @@ on:
     branches: ["main"]
   push:
     branches: ["main"]
-
+ 
 permissions:
   contents: write
   pull-requests: write
@@ -96,7 +96,7 @@ jobs:
             dbt build --select state:modified+ --defer --state ./state --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
             dbt test --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
           else
-            echo "⚠️ No manifest.json found in S3, running full DEV build"
+            echo "No manifest.json found in S3, running full DEV build"
             dbt build --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
             dbt test --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
           fi
@@ -173,7 +173,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION }} 
 
       - name: Download manifest.json from S3 (Previous Prod State)
         run: |
