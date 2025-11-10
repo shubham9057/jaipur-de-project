@@ -71,7 +71,7 @@ jobs:
         run: |
           mkdir -p $GITHUB_WORKSPACE/.dbt
           cat > $GITHUB_WORKSPACE/.dbt/profiles.yml <<EOL
-          default:
+          de_project:
             target: dev
             outputs:
               dev:
@@ -192,7 +192,7 @@ jobs:
         run: |
           mkdir -p $GITHUB_WORKSPACE/.dbt
           cat > $GITHUB_WORKSPACE/.dbt/profiles.yml <<EOL
-          default:
+          de_project:
             target: prod
             outputs:
               prod:
