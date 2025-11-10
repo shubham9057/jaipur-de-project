@@ -87,7 +87,6 @@ jobs:
 
       - name: Install dependencies (DEV)
         run: dbt deps --profiles-dir $GITHUB_WORKSPACE/.dbt
-        working-directory: ./dbt
 
       - name: Run dbt build + test (DEV - Slim CI)
         run: |
@@ -100,7 +99,6 @@ jobs:
             dbt build --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
             dbt test --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
           fi
-        working-directory: ./dbt
 
       - name: Switch label dev → prod
         if: success() && github.event_name == 'pull_request'
@@ -208,7 +206,6 @@ jobs:
 
       - name: Install dependencies
         run: dbt deps --profiles-dir $GITHUB_WORKSPACE/.dbt
-        working-directory: ./dbt
 
       - name: Run dbt build (Prod - State-aware) ⚠️ USE WITH CAUTION IN PROD
         run: |
@@ -220,11 +217,6 @@ jobs:
             echo "⚠️ No manifest.json found, running FULL Prod build"
             dbt build --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
           fi
-        working-directory: ./dbt
-
-      - name: Run dbt tests (Prod)
-        run: dbt test --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
-        working-directory: ./dbt
 
       - name: Run dbt tests (Prod)
         run: dbt test --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
@@ -236,7 +228,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: prod-manifest
-          path: dbt/target/manifest.json
           path: target/manifest.json
 
       - name: Switch label prod → deployed
