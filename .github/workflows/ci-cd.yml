@@ -4,7 +4,7 @@ on:
     branches: ["main"]
   push:
     branches: ["main"]
- 
+
 permissions:
   contents: write
   pull-requests: write
@@ -67,6 +67,11 @@ jobs:
       - name: Install dbt Snowflake
         run: pip install dbt-snowflake
 
+      - name: Setup Snowflake Private Key
+        run: |
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+          chmod 600 $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+
       - name: Configure dbt profile (DEV)
         run: |
           mkdir -p $GITHUB_WORKSPACE/.dbt
@@ -78,7 +83,8 @@ jobs:
                 type: snowflake
                 account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
                 user: ${{ secrets.SNOWFLAKE_USER }}
-                password: ${{ secrets.SNOWFLAKE_PASSWORD }}
+                private_key_path: $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+                passphrase: ${{ secrets.SNOWFLAKE_PASSPHRASE }}
                 role: ${{ secrets.SNOWFLAKE_ROLE }}
                 database: ${{ secrets.SNOWFLAKE_DATABASE }}
                 warehouse: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
@@ -91,12 +97,12 @@ jobs:
 
       - name: Run dbt build + test (DEV - Slim CI)
         run: |
-          if [ -f "./state/manifest.json" ]; then
+          if [ -f "../state/manifest.json" ]; then
             echo "✅ Using Slim CI with manifest.json from S3"
-            dbt build --select state:modified+ --defer --state ./state --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
+            dbt build --select state:modified+ --defer --state ../state --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
             dbt test --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
           else
-            echo "No manifest.json found in S3, running full DEV build"
+            echo "⚠️ No manifest.json found in S3, running full DEV build"
             dbt build --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
             dbt test --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
           fi
@@ -173,7 +179,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }} 
+          aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Download manifest.json from S3 (Previous Prod State)
         run: |
@@ -188,6 +194,11 @@ jobs:
       - name: Install dbt Snowflake
         run: pip install dbt-snowflake
 
+      - name: Setup Snowflake Private Key
+        run: |
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+          chmod 600 $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+
       - name: Configure dbt profile (Prod)
         run: |
           mkdir -p $GITHUB_WORKSPACE/.dbt
@@ -199,7 +210,8 @@ jobs:
                 type: snowflake
                 account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
                 user: ${{ secrets.SNOWFLAKE_USER }}
-                password: ${{ secrets.SNOWFLAKE_PASSWORD }}
+                private_key_path: $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+                passphrase: ${{ secrets.SNOWFLAKE_PASSPHRASE }}
                 role: ${{ secrets.SNOWFLAKE_ROLE }}
                 database: ${{ secrets.SNOWFLAKE_DATABASE }}
                 warehouse: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
@@ -212,10 +224,9 @@ jobs:
 
       - name: Run dbt build (Prod - State-aware) ⚠️ USE WITH CAUTION IN PROD
         run: |
-          if [ -f "./state/manifest.json" ]; then
+          if [ -f "../state/manifest.json" ]; then
             echo "✅ Running State-Aware Prod Deployment"
-            # Use --select state:modified+ to only build new/changed models and their children
-            dbt build --select state:modified+ --defer --state ./state --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
+            dbt build --select state:modified+ --defer --state ../state --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
           else
             echo "⚠️ No manifest.json found, running FULL Prod build"
             dbt build --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
@@ -231,7 +242,7 @@ jobs:
         run: dbt test --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
 
       - name: Upload manifest.json to S3
-        run: aws s3 cp target/manifest.json s3://${{ secrets.S3_BUCKET_NAME }}/manifest.json
+        run: aws s3 cp dbt/target/manifest.json s3://${{ secrets.S3_BUCKET_NAME }}/manifest.json
 
       - name: Save manifest.json (Prod)
         uses: actions/upload-artifact@v4
