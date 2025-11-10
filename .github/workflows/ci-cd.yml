@@ -221,17 +221,15 @@ jobs:
             dbt build --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
           fi
         working-directory: ./dbt
+        
 
       - name: Run dbt tests (Prod)
         run: dbt test --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
         working-directory: ./dbt
 
-<<<<<<< HEAD
-=======
       - name: Run dbt tests (Prod)
         run: dbt test --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
 
->>>>>>> f7d44ec69a5b27f5a16f31c3cac66ce3ab078c44
       - name: Upload manifest.json to S3
         run: aws s3 cp target/manifest.json s3://${{ secrets.S3_BUCKET_NAME }}/manifest.json
 
@@ -240,10 +238,6 @@ jobs:
         with:
           name: prod-manifest
           path: dbt/target/manifest.json
-<<<<<<< HEAD
-=======
-          path: target/manifest.json
->>>>>>> f7d44ec69a5b27f5a16f31c3cac66ce3ab078c44
 
       - name: Switch label prod → deployed
         if: success() && github.event_name == 'pull_request'
