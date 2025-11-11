@@ -228,7 +228,7 @@ jobs:
             echo "✅ Running State-Aware Prod Deployment"
             dbt build --select state:modified+ --defer --state ../state --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
           else
-            echo "⚠️ No manifest.json found, running FULL Prod build"
+            echo "No manifest.json found, running FULL Prod build"
             dbt build --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
           fi
         working-directory: ./dbt
