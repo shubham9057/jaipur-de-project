@@ -90,7 +90,11 @@ jobs:
                 warehouse: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
                 schema: DE_PROJECT_DEV
           EOL
-
+      - name: DEBUG - Check the generated profile
+        run: |
+          echo "--- Displaying profiles.yml ---"
+          cat $GITHUB_WORKSPACE/.dbt/profiles.yml
+          
       - name: Install dependencies (DEV)
         run: dbt deps --profiles-dir $GITHUB_WORKSPACE/.dbt
         working-directory: ./dbt
