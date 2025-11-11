@@ -260,7 +260,6 @@ jobs:
 
       
       - name: Upload manifest.json to S3
-          run: aws s3 cp dbt/target/manifest.json s3://${{ secrets.S3_BUCKET_NAME }}/manifest.json
         run: aws s3 cp dbt/target/manifest.json s3://${{ secrets.S3_BUCKET_NAME }}/manifest.json
 
       - name: Save manifest.json (Prod)
