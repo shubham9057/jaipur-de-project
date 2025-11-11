@@ -5,7 +5,7 @@ SELECT
     T.TRUCK_OPENING_DATE as TRUCK_OPENING_YEAR,           
     T.MODEL,                       
     
-    -- Calculated Attribute: How old the truck is (as of the current year)
+    -- Calculated attribute: How old the truck is (as of the current year)
     (YEAR(CURRENT_DATE()) - YEAR(T.TRUCK_OPENING_DATE)) AS TRUCK_AGE_YEARS,
     
    
