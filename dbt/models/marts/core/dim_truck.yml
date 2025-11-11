@@ -1,0 +1,9 @@
+version: 2
+
+models:
+  - name: dim_truck
+    description: "Dimension model representing individual food trucks and their attributes."
+    columns:
+      - name: TRUCK_ID
+        data_tests: 
+        - not_null
