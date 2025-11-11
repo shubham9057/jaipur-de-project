@@ -75,8 +75,8 @@ jobs:
       - name: Configure dbt profile (DEV)
         run: |
           # Create the private key file from the secret content
-          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > private_key.p8
-          chmod 600 private_key.p8  
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > ./dbt/private_key.p8
+          chmod 600 ./dbt/private_key.p8  
 
           mkdir -p $GITHUB_WORKSPACE/.dbt
           cat > $GITHUB_WORKSPACE/.dbt/profiles.yml <<EOL
