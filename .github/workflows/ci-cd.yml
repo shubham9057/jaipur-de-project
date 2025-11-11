@@ -67,16 +67,11 @@ jobs:
       - name: Install dbt Snowflake
         run: pip install dbt-snowflake
 
-      - name: Setup Snowflake Private Key
-        run: |
-          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > $GITHUB_WORKSPACE/snowflake_rsa_key.p8
-          chmod 600 $GITHUB_WORKSPACE/snowflake_rsa_key.p8
-
       - name: Configure dbt profile (DEV)
         run: |
-          # Create the private key file from the secret content
-          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > ./dbt/private_key.p8
-          chmod 600 ./dbt/private_key.p8  
+          # Create the private key file at a reliable, absolute path
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+          chmod 600 $GITHUB_WORKSPACE/snowflake_rsa_key.p8
 
           mkdir -p $GITHUB_WORKSPACE/.dbt
           cat > $GITHUB_WORKSPACE/.dbt/profiles.yml <<EOL
@@ -86,18 +81,14 @@ jobs:
               dev:
                 type: snowflake
                 account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-                user: ${{ secrets.SNOWFLAKE_USER }}
-                private_key_path: ./private_key.p8
+                user: ${{ secrets.SNOWFLAKE_SERVICE_USER }}
+                private_key_path: $GITHUB_WORKSPACE/snowflake_rsa_key.p8
                 private_key_passphrase: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
                 role: ${{ secrets.SNOWFLAKE_ROLE }}
                 database: ${{ secrets.SNOWFLAKE_DATABASE }}
                 warehouse: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
                 schema: DE_PROJECT_DEV
           EOL
-      - name: DEBUG - Check the generated profile
-        run: |
-          echo "--- Displaying profiles.yml ---"
-          cat $GITHUB_WORKSPACE/.dbt/profiles.yml
 
       - name: Install dependencies (DEV)
         run: dbt deps --profiles-dir $GITHUB_WORKSPACE/.dbt
@@ -202,13 +193,12 @@ jobs:
       - name: Install dbt Snowflake
         run: pip install dbt-snowflake
 
-      - name: Setup Snowflake Private Key
+      - name: Configure dbt profile (Prod)
         run: |
+          # Create the private key file at a reliable, absolute path
           echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > $GITHUB_WORKSPACE/snowflake_rsa_key.p8
           chmod 600 $GITHUB_WORKSPACE/snowflake_rsa_key.p8
 
-      - name: Configure dbt profile (Prod)
-        run: |
           mkdir -p $GITHUB_WORKSPACE/.dbt
           cat > $GITHUB_WORKSPACE/.dbt/profiles.yml <<EOL
           de_project:
@@ -217,9 +207,9 @@ jobs:
               prod:
                 type: snowflake
                 account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-                user: ${{ secrets.SNOWFLAKE_USER }}
+                user: ${{ secrets.SNOWFLAKE_SERVICE_USER }}
                 private_key_path: $GITHUB_WORKSPACE/snowflake_rsa_key.p8
-                passphrase: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+                private_key_passphrase: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
                 role: ${{ secrets.SNOWFLAKE_ROLE }}
                 database: ${{ secrets.SNOWFLAKE_DATABASE }}
                 warehouse: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
@@ -236,7 +226,7 @@ jobs:
             echo "✅ Running State-Aware Prod Deployment"
             dbt build --select state:modified+ --defer --state ../state --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
           else
-            echo "No manifest.json found, running FULL Prod build"
+            echo "⚠️ No manifest.json found, running FULL Prod build"
             dbt build --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
           fi
         working-directory: ./dbt
@@ -246,11 +236,9 @@ jobs:
         run: dbt test --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
         working-directory: ./dbt
 
-      - name: Run dbt tests (Prod)
-        run: dbt test --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
-
+      
       - name: Upload manifest.json to S3
-        run: aws s3 cp dbt/target/manifest.json s3://${{ secrets.S3_BUCKET_NAME }}/manifest.json
+          run: aws s3 cp dbt/target/manifest.json s3://${{ secrets.S3_BUCKET_NAME }}/manifest.json
 
       - name: Save manifest.json (Prod)
         uses: actions/upload-artifact@v4
