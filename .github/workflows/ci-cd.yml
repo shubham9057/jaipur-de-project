@@ -74,6 +74,9 @@ jobs:
 
       - name: Configure dbt profile (DEV)
         run: |
+          # Create the private key file at a reliable, absolute path
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+          chmod 600 $GITHUB_WORKSPACE/snowflake_rsa_key.p8
           # Create the private key file from the secret content
           echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > ./dbt/private_key.p8
           chmod 600 ./dbt/private_key.p8  
@@ -86,6 +89,8 @@ jobs:
               dev:
                 type: snowflake
                 account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+                user: ${{ secrets.SNOWFLAKE_SERVICE_USER }}
+                private_key_path: $GITHUB_WORKSPACE/snowflake_rsa_key.p8
                 user: ${{ secrets.SNOWFLAKE_USER }}
                 private_key_path: ./private_key.p8
                 private_key_passphrase: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
@@ -209,6 +214,10 @@ jobs:
 
       - name: Configure dbt profile (Prod)
         run: |
+          # Create the private key file at a reliable, absolute path
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+          chmod 600 $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+
           mkdir -p $GITHUB_WORKSPACE/.dbt
           cat > $GITHUB_WORKSPACE/.dbt/profiles.yml <<EOL
           de_project:
@@ -217,6 +226,9 @@ jobs:
               prod:
                 type: snowflake
                 account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+                user: ${{ secrets.SNOWFLAKE_SERVICE_USER }}
+                private_key_path: $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+                private_key_passphrase: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
                 user: ${{ secrets.SNOWFLAKE_USER }}
                 private_key_path: $GITHUB_WORKSPACE/snowflake_rsa_key.p8
                 passphrase: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
@@ -246,10 +258,9 @@ jobs:
         run: dbt test --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
         working-directory: ./dbt
 
-      - name: Run dbt tests (Prod)
-        run: dbt test --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
-
+      
       - name: Upload manifest.json to S3
+          run: aws s3 cp dbt/target/manifest.json s3://${{ secrets.S3_BUCKET_NAME }}/manifest.json
         run: aws s3 cp dbt/target/manifest.json s3://${{ secrets.S3_BUCKET_NAME }}/manifest.json
 
       - name: Save manifest.json (Prod)
