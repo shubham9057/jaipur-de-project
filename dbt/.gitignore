@@ -4,4 +4,6 @@
 ### dbt ###
 dbt_packages/
 logs/
+target/
+dbt_packages/
 

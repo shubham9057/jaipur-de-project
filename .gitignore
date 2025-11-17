@@ -1,2 +1,7 @@
 #Environment Variables
 .venv/
+
+#other
+.tmp_dagster_home_6r4ykmb0/ 
+dg/__pycache__/
+logs/

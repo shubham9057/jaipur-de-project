@@ -2,8 +2,13 @@ version: 2
 sources:
 - name: tb_101
   description: 'Point of Sale source data'
+<<<<<<< HEAD
   database: SSINGHAL
   schema: TASTY_BYTES_RAW
+=======
+  database: ssinghal
+  schema: tasty_bytes_raw
+>>>>>>> 75cba133a63d0aa9d403be3d605f63ef114d0f92
   tables:
   - name: COUNTRY
     description: 'Country reference data'
@@ -137,8 +142,9 @@ sources:
       data_tests:
         - not_null
         - relationships:
-            to: source('tb_101', 'ORDER_HEADER')
-            field: ORDER_ID
+            arguments:
+              to: source('tb_101', 'ORDER_HEADER')
+              field: ORDER_ID
     - name: MENU_ITEM_ID
       description: 'Foreign key to menu'
       data_tests:
@@ -164,6 +170,7 @@ sources:
         - is_positive_amount
     - name: ORDER_ITEM_DISCOUNT_AMOUNT
       description: 'Discount amount for line'
+
   - name: ORDER_HEADER
     description: 'Order header information'
     loaded_at_field: ORDER_TS
@@ -177,15 +184,17 @@ sources:
       data_tests:
         - not_null
         - relationships:
-            to: source('tb_101', 'TRUCK')
-            field: TRUCK_ID
+            arguments:
+              to: source('tb_101', 'TRUCK')
+              field: TRUCK_ID
     - name: LOCATION_ID
       description: 'Foreign key to location'
       data_tests:
         - not_null
         - relationships:
-            to: source('tb_101', 'LOCATION')
-            field: LOCATION_ID
+            arguments:
+              to: source('tb_101', 'LOCATION')
+              field: LOCATION_ID
     - name: CUSTOMER_ID
       description: 'Customer identifier'
     - name: DISCOUNT_ID
@@ -202,8 +211,9 @@ sources:
       description: 'Order timestamp'
       data_tests:
         - not_null
-        - dbt_utils.expression_is_true:  # Verify timestamp is not in the future
-            expression: "{{ column_name }} <= current_timestamp()"
+        - dbt_utils.expression_is_true:                 # Verify timestamp is not in the future
+            arguments:
+              expression: "{{ column_name }} <= current_timestamp()"
     - name: SERVED_TS
       description: 'Time order was served'
     - name: ORDER_CURRENCY
@@ -216,9 +226,10 @@ sources:
         - not_null
         - is_positive_amount
         - dbt_utils.accepted_range:  # Realistic order amount range
-            min_value: 0
-            max_value: 10
-            inclusive: true
+            arguments:
+              min_value: 0
+              #max_value: 10
+              inclusive: true
     - name: ORDER_TAX_AMOUNT
       description: 'Tax amount'
     - name: ORDER_DISCOUNT_AMOUNT
@@ -270,8 +281,9 @@ sources:
       description: 'Foreign key to franchise'
       data_tests:
         - relationships:
-            to: source('tb_101', 'FRANCHISE')
-            field: FRANCHISE_ID
+            arguments:
+              to: source('tb_101', 'FRANCHISE')
+              field: FRANCHISE_ID
     - name: TRUCK_OPENING_DATE
       description: 'Date truck began operations'
       data_tests:

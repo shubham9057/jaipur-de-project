@@ -19,7 +19,7 @@ def model(dbt, session):
             trucks_df["PRIMARY_CITY"] == locations_df["CITY"], 
             "inner"
         )
-        # Use simple column names and case-insensitive approach
+        # Use simple column names and case insensitive approach
         .select(
             locations_df["LOCATION_ID"],
             locations_df["LOCATION"],

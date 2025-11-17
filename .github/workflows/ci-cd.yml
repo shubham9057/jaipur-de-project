@@ -1,0 +1,292 @@
+name: dbt CI -> PROD
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  setup-labels:
+    name: Setup Labels
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Install GitHub CLI
+        run: sudo apt-get install gh -y
+
+      - name: Authenticate GitHub CLI with PAT
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Create labels if not exist
+        run: |
+          for label in dev prod deployed failed-dev failed-prod; do
+            if ! gh label list --json name | grep -q "\"$label\""; then
+              gh label create "$label" --color "ededed" || true
+              echo "Created label: $label"
+            else
+              echo "Label $label already exists"
+            fi
+          done
+
+  dbt-DEV:
+    name: dbt DEV (Slim CI)
+    runs-on: ubuntu-latest
+    needs: setup-labels
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Download manifest.json from S3
+        run: |
+          mkdir -p ./state
+          aws s3 cp s3://${{ secrets.S3_BUCKET_NAME }}/manifest.json ./state/manifest.json || echo "No manifest.json found in S3"
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dbt Snowflake
+        run: pip install dbt-snowflake
+
+      - name: Setup Snowflake Private Key
+        run: |
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+          chmod 600 $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+
+      - name: Configure dbt profile (DEV)
+        run: |
+          # Create the private key file at a reliable, absolute path
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+          chmod 600 $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+          # Create the private key file from the secret content
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > ./dbt/private_key.p8
+          chmod 600 ./dbt/private_key.p8  
+
+          mkdir -p $GITHUB_WORKSPACE/.dbt
+          cat > $GITHUB_WORKSPACE/.dbt/profiles.yml <<EOL
+          de_project:
+            target: dev
+            outputs:
+              dev:
+                type: snowflake
+                account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+                user: ${{ secrets.SNOWFLAKE_SERVICE_USER }}
+                private_key_path: $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+                user: ${{ secrets.SNOWFLAKE_USER }}
+                private_key_path: ./private_key.p8
+                private_key_passphrase: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+                role: ${{ secrets.SNOWFLAKE_ROLE }}
+                database: ${{ secrets.SNOWFLAKE_DATABASE }}
+                warehouse: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+                schema: DE_PROJECT_DEV
+          EOL
+      - name: DEBUG - Check the generated profile
+        run: |
+          echo "--- Displaying profiles.yml ---"
+          cat $GITHUB_WORKSPACE/.dbt/profiles.yml
+
+      - name: Install dependencies (DEV)
+        run: dbt deps --profiles-dir $GITHUB_WORKSPACE/.dbt
+        working-directory: ./dbt
+
+      - name: Run dbt build + test (DEV - Slim CI)
+        run: |
+          if [ -f "../state/manifest.json" ]; then
+            echo "✅ Using Slim CI with manifest.json from S3"
+            dbt build --select state:modified+ --defer --state ../state --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
+            dbt test --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
+          else
+            echo "⚠️ No manifest.json found in S3, running full DEV build"
+            dbt build --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
+            dbt test --target dev --profiles-dir $GITHUB_WORKSPACE/.dbt
+          fi
+        working-directory: ./dbt
+
+      - name: Switch label dev → prod
+        if: success() && github.event_name == 'pull_request'
+        run: gh pr edit ${{ github.event.pull_request.number }} --remove-label "dev" --add-label "prod"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Switch label dev → failed-dev
+        if: failure() && github.event_name == 'pull_request'
+        run: gh pr edit ${{ github.event.pull_request.number }} --remove-label "dev" --add-label "failed-dev"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post PR comment (DEV success)
+        if: success()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: dbt-dev
+          message: |
+            ✅ dbt DEV finished with status: **success**
+            - Run ID: `${{ github.run_id }}`
+            - DEV Schema: `DEV`
+            - Logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Post PR comment (DEV failure)
+        if: failure()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: dbt-dev
+          message: |
+            ❌ dbt DEV finished with status: **failure**
+            - Run ID: `${{ github.run_id }}`
+            - DEV Schema: `DEV`
+            - Logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  auto-merge:
+    name: Auto Merge PR to main
+    runs-on: ubuntu-latest
+    needs: dbt-DEV
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'auto-merge') && success()
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install GitHub CLI
+        run: sudo apt-get install gh -y
+
+      - name: Authenticate GitHub CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Merge PR
+        run: |
+          PR_NUMBER=$(jq -r ".pull_request.number" "$GITHUB_EVENT_PATH")
+          echo "Merging PR #$PR_NUMBER into main"
+          gh pr merge $PR_NUMBER --merge --admin
+
+  dbt-prod:
+    name: dbt Prod Deployment (State-aware)
+    runs-on: ubuntu-latest
+    needs: [auto-merge]
+    if: github.event_name == 'pull_request' && success() || github.event_name == 'push'
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Download manifest.json from S3 (Previous Prod State)
+        run: |
+          mkdir -p ./state
+          aws s3 cp s3://${{ secrets.S3_BUCKET_NAME }}/manifest.json ./state/manifest.json || echo "No manifest.json found in S3"
+          
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dbt Snowflake
+        run: pip install dbt-snowflake
+
+      - name: Setup Snowflake Private Key
+        run: |
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+          chmod 600 $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+
+      - name: Configure dbt profile (Prod)
+        run: |
+          # Create the private key file at a reliable, absolute path
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+          chmod 600 $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+
+          mkdir -p $GITHUB_WORKSPACE/.dbt
+          cat > $GITHUB_WORKSPACE/.dbt/profiles.yml <<EOL
+          de_project:
+            target: prod
+            outputs:
+              prod:
+                type: snowflake
+                account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+                user: ${{ secrets.SNOWFLAKE_SERVICE_USER }}
+                private_key_path: $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+                private_key_passphrase: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+                user: ${{ secrets.SNOWFLAKE_USER }}
+                private_key_path: $GITHUB_WORKSPACE/snowflake_rsa_key.p8
+                passphrase: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+                role: ${{ secrets.SNOWFLAKE_ROLE }}
+                database: ${{ secrets.SNOWFLAKE_DATABASE }}
+                warehouse: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+                schema: DE_PROJECT_PROD
+          EOL
+
+      - name: Install dependencies
+        run: dbt deps --profiles-dir $GITHUB_WORKSPACE/.dbt
+        working-directory: ./dbt
+
+      - name: Run dbt build (Prod - State-aware) ⚠️ USE WITH CAUTION IN PROD
+        run: |
+          if [ -f "../state/manifest.json" ]; then
+            echo "✅ Running State-Aware Prod Deployment"
+            dbt build --select state:modified+ --defer --state ../state --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
+          else
+            echo "No manifest.json found, running FULL Prod build"
+            dbt build --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
+          fi
+        working-directory: ./dbt
+        
+
+      - name: Run dbt tests (Prod)
+        run: dbt test --target prod --profiles-dir $GITHUB_WORKSPACE/.dbt
+        working-directory: ./dbt
+
+      
+      - name: Upload manifest.json to S3
+        run: aws s3 cp dbt/target/manifest.json s3://${{ secrets.S3_BUCKET_NAME }}/manifest.json
+
+      - name: Save manifest.json (Prod)
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-manifest
+          path: dbt/target/manifest.json
+
+      - name: Switch label prod → deployed
+        if: success() && github.event_name == 'pull_request'
+        run: gh pr edit ${{ github.event.pull_request.number }} --remove-label "prod" --add-label "deployed"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Switch label prod → failed-prod
+        if: failure() && github.event_name == 'pull_request'
+        run: gh pr edit ${{ github.event.pull_request.number }} --remove-label "prod" --add-label "failed-prod"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post PR comment (Prod success)
+        if: success()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: dbt-prod
+          message: |
+            🚀 dbt Prod finished with status: **success**
+            - Run ID: `${{ github.run_id }}`
+            - Prod Schema: `PROD`
+            - Logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
