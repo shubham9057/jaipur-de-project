@@ -2,13 +2,8 @@ version: 2
 sources:
 - name: tb_101
   description: 'Point of Sale source data'
-<<<<<<< HEAD
   database: SSINGHAL
   schema: TASTY_BYTES_RAW
-=======
-  database: ssinghal
-  schema: tasty_bytes_raw
->>>>>>> 75cba133a63d0aa9d403be3d605f63ef114d0f92
   tables:
   - name: COUNTRY
     description: 'Country reference data'
