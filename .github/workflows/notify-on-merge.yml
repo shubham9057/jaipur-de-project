@@ -1,0 +1,60 @@
+name: PR Merge Notification
+
+on:
+  pull_request:
+    types: [closed]
+    # Restrict trigger to PRs merged into the 'main' branch
+    branches: [main]
+
+jobs:
+  send_email:
+    runs-on: ubuntu-latest
+    
+    # Only run the job if the pull request was actually merged
+    if: github.event.pull_request.merged == true
+    
+    steps:
+      - name: Send Summary Email on Merge
+        uses: dawson7/email-action@v2
+        with:
+          # --- Configuration using Repository Secrets ---
+          server_address: ${{ secrets.EMAIL_SERVER }}       # e.g., smtp.gmail.com
+          server_port: ${{ secrets.EMAIL_PORT }}            # e.g., 587 (with secure: true)
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}           # The Gmail App Password
+          secure: true                                      # Use TLS/SSL
+          
+          # --- Email Content and Recipients ---
+          to: 'jaipur-data-engineering@atrium.ai'
+          from: 'CI Bot <${{ secrets.EMAIL_USERNAME }}>'
+          
+          # Email Subject summarizing the PR
+          subject: |
+            ✅ MERGED: PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}
+            
+          # Email Body: Using Markdown for better formatting
+          body: |
+            # Pull Request Merged to `main` Branch
+            
+            ---
+            
+            **Title:** **${{ github.event.pull_request.title }}**
+            **Repository:** ${{ github.repository }}
+            
+            * **PR Number:** #${{ github.event.pull_request.number }}
+            * **Author:** @${{ github.event.pull_request.user.login }}
+            * **Merged By:** @${{ github.event.pull_request.merged_by.login }}
+            * **Merge Commit SHA:** `${{ github.event.pull_request.merge_commit_sha }}`
+            
+            ### 📝 Summary of Changes
+            
+            ${{ github.event.pull_request.body }}
+            
+            ---
+            
+            **View the Pull Request:** [Click here](${{ github.event.pull_request.html_url }})
+            
+            **View the Merge Commit:** [Click here](${{ github.event.pull_request.html_url }}/commits/${{ github.event.pull_request.merge_commit_sha }})
+          
+          # Tell the action to convert the Markdown in the body to HTML
+          convert_markdown: true
