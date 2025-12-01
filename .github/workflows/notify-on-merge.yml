@@ -2,11 +2,12 @@ name: PR Merge AI Summary Notification
 
 on:
   pull_request:
+    # Trigger on PR close (we will test by merging a PR)
     types: [closed]
     branches: [main]
 
 jobs:
-  send_email:
+  send_email_test:
     runs-on: ubuntu-latest
     if: github.event.pull_request.merged == true
     
