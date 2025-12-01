@@ -1,85 +1,121 @@
-name: PR Merge Email Connection Test
+name: PR Merge AI Summary Notification
 
 on:
   pull_request:
-    # Trigger on PR close (we will test by merging a PR)
     types: [closed]
     branches: [main]
 
 jobs:
-  send_email_test:
+  send_email:
     runs-on: ubuntu-latest
-    # Only run if the PR was actually merged
     if: github.event.pull_request.merged == true
     
-    # We only need permissions to read content (to checkout the repo)
+    # Set permissions to access the AI models and repo content
     permissions:
       contents: read
+      models: write # Allows access to GitHub Models API
+      pull-requests: read
       
     steps:
-      - name: Checkout Repository
+      # 1. Setup the environment for the AI summary generation
+      - name: Checkout Code
         uses: actions/checkout@v4
+      
+      - name: Setup GitHub CLI and Models Extension
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Install gh CLI and the gh-models extension
+          sudo apt-get update && sudo apt-get install -y gh
+          gh extension install github/gh-models
 
+      # 2. Generate the AI Summary using GitHub Models
+      - name: Generate AI Summary
+        id: ai_summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Fetch the diff between the merged branch and its base (main)
+          PR_DIFF=$(gh pr diff $PR_NUMBER --patch)
+
+          # Define the prompt for the model
+          PROMPT="Summarize the following code changes from a Pull Request into a clear, concise paragraph and a short bulleted list. The language model should focus on the purpose and impact of the changes for a release note: \n\n ${PR_DIFF}"
+          
+          # Call the AI model and extract the content
+          SUMMARY=$(gh models chat --model openai/gpt-4o --prompt "$PROMPT" --json | jq -r '.choices[0].message.content')
+          
+          # Replace newlines with a placeholder for safe multi-line output
+          ESCAPED_SUMMARY="${SUMMARY//$'\n'/%0A}" 
+          
+          # Set the output variable for the next step to use
+          echo "SUMMARY=${ESCAPED_SUMMARY}" >> $GITHUB_OUTPUT
+
+      # 3. Setup Python for sending the email
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      # The simplified step to test the SMTP connection and secrets
-      - name: Test Email Connection via Python
+      # 4. Send the Email with the AI-generated Summary via Python Script
+      - name: Send Summary Email via Python
         env:
-          # --- EMAIL SECRETS ---
+          # Define environment variables for the Python script
           EMAIL_SERVER: ${{ secrets.EMAIL_SERVER }}
           EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          # --- TEST CONTENT ---
-          EMAIL_TO: 'de_jaipur@gmail.com'
-          EMAIL_SUBJECT: "✅ GITHUB ACTION TEST: PR ${{ github.event.pull_request.number }} Merged Successfully"
+          EMAIL_TO: 'harsh.sharma@atrium.ai; naresh.keerthi@atrium.ai'
+          EMAIL_SUBJECT: "🤖 AI Summary: PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}"
+          
+          # Construct the body of the email in an environment variable
           EMAIL_BODY: |
-            A Pull Request was merged to main. This email confirms that the GitHub Actions workflow successfully authenticated and connected to your SMTP server (using the secrets you provided) and sent this notification.
-            
-            PR Title: ${{ github.event.pull_request.title }}
-            Action Status: SUCCESS
-            
+            <html><body>
+              <h1>AI-Generated Pull Request Summary</h1>
+              <hr>
+              <p>A Pull Request has been successfully <strong>MERGED</strong> into the <code>main</code> branch.</p>
+              <p><strong>PR Title:</strong> <b>${{ github.event.pull_request.title }}</b></p>
+              <p><strong>Author:</strong> @${{ github.event.pull_request.user.login }}</p>
+              
+              <h3>🤖 Automated Summary</h3>
+              <div style="padding: 10px; border: 1px solid #ccc; background-color: #f9f9f9;">
+                ${{ steps.ai_summary.outputs.SUMMARY }}
+              </div>
+              <hr>
+              <p><a href="${{ github.event.pull_request.html_url }}">View the Pull Request</a></p>
+            </body></html>
+
         run: |
           python - <<EOF
           import smtplib
           from email.mime.text import MIMEText
           import os
-          import sys
-
+          
           # Fetch environment variables
           sender = os.environ['EMAIL_USERNAME']
           receiver = os.environ['EMAIL_TO']
           subject = os.environ['EMAIL_SUBJECT']
           body = os.environ['EMAIL_BODY']
           
-          # Create message object (plain text for simplicity)
-          msg = MIMEText(body, 'plain')
+          # Create message object (using HTML for rich text formatting)
+          msg = MIMEText(body, 'html')
           msg['Subject'] = subject
           msg['From'] = sender
           msg['To'] = receiver
 
-          print(f"Attempting connection to {os.environ['EMAIL_SERVER']} on port {os.environ['EMAIL_PORT']}...")
-          
+          # Send the email
           try:
-              # 1. Connect and Start TLS
               server = smtplib.SMTP(os.environ['EMAIL_SERVER'], int(os.environ['EMAIL_PORT']))
               server.starttls()
-              
-              # 2. Login using secrets
               server.login(os.environ['EMAIL_USERNAME'], os.environ['EMAIL_PASSWORD'])
-              print("Authentication successful.")
               
-              # 3. Send email
               server.sendmail(sender, [receiver], msg.as_string())
-              print("SUCCESS: Test email sent.")
+              print("Email sent successfully!")
               
           except Exception as e:
-              print(f"FAILURE: Could not send email. Check secrets and firewall settings. Error: {e}")
-              sys.exit(1) # Fail the workflow step
-              
+              # Log the error without revealing sensitive credentials
+              print(f"Failed to send email. Check your secrets and port settings: {e}")
+              exit(1) # Fail the action if the email could not be sent
           finally:
               server.quit()
           EOF
