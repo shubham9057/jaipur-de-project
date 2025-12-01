@@ -44,7 +44,7 @@ jobs:
           PROMPT="Summarize the following code changes from a Pull Request into a clear, concise paragraph and a short bulleted list. The language model should focus on the purpose and impact of the changes for a release note: \n\n ${PR_DIFF}"
           
           # Call the AI model and extract the content
-          SUMMARY=$(gh models chat --model openai/gpt-4o --prompt "$PROMPT" --json | jq -r '.choices[0].message.content')
+          SUMMARY=$(gh models generate --model openai/gpt-4o --prompt "$PROMPT" --json | jq -r '.choices[0].message.content')
           
           # Replace newlines with a placeholder for safe multi-line output
           ESCAPED_SUMMARY="${SUMMARY//$'\n'/%0A}" 
