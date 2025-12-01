@@ -67,7 +67,7 @@ jobs:
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TO: 'harsh.sharma@atrium.ai'
-          EMAIL_SUBJECT: "🤖 AI Summary: PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}"
+          EMAIL_SUBJECT: "✅ GITHUB PR MERGE: PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }} "
           
           # Construct the body of the email in an environment variable
           EMAIL_BODY: |
@@ -78,7 +78,7 @@ jobs:
               <p><strong>PR Title:</strong> <b>${{ github.event.pull_request.title }}</b></p>
               <p><strong>Author:</strong> @${{ github.event.pull_request.user.login }}</p>
               
-              <h3>🤖 Automated Summary</h3>
+              <h3>Automated PR Summary</h3>
               <div style="padding: 10px; border: 1px solid #ccc; background-color: #f9f9f9;">
                 ${{ steps.ai_summary.outputs.SUMMARY }}
               </div>
