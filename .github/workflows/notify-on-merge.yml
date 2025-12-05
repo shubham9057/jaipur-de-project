@@ -1,122 +1,122 @@
-name: PR Merge AI Summary Notification
+name: PR Merge AI Summary Notification via Copilot
 
 on:
   pull_request:
-    # Trigger on PR close (we will test by merging a PR)
     types: [closed]
     branches: [main]
 
 jobs:
-  send_email_test:
+  send_email:
     runs-on: ubuntu-latest
     if: github.event.pull_request.merged == true
-    
-    # Set permissions to access the AI models and repo content
+
     permissions:
       contents: read
-      # models: write # Allows access to GitHub Models API
       pull-requests: read
-      
+
     steps:
-      # 1. Setup the environment for the AI summary generation
       - name: Checkout Code
         uses: actions/checkout@v4
-      
-      - name: Setup GitHub CLI and Models Extension
+
+      - name: Setup GitHub CLI
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Install gh CLI and the gh-models extension
           sudo apt-get update && sudo apt-get install -y gh
-          gh extension install github/gh-models
 
-      # 2. Generate the AI Summary using GitHub Models
-      - name: Generate AI Summary
+      # Install Copilot CLI if available - fallback to models if not
+      - name: Attempt Copilot CLI Install
+        continue-on-error: true
+        run: |
+          # Try to install Copilot CLI. Available if Copilot for CLI is enabled for your repo.
+          npm install -g @githubnext/github-copilot-cli || true
+
+      - name: Generate Copilot PR Summary (Fallback to Models if CLI not available)
         id: ai_summary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          # Fetch the diff between the merged branch and its base (main)
+          # Get the PR diff
           PR_DIFF=$(gh pr diff $PR_NUMBER --patch)
 
-          # Define the prompt for the model
-          PROMPT="Summarize the following code changes from a Pull Request into a clear, concise paragraph and a short bulleted list. The language model should focus on the purpose and impact of the changes for a release note: \n\n ${PR_DIFF}"
-          
-          # Call the AI model and extract the content
-          SUMMARY=$(gh models generate --model openai/gpt-4o --prompt "$PROMPT" --json | jq -r '.choices[0].message.content')
-          
-          # Replace newlines with a placeholder for safe multi-line output
-          ESCAPED_SUMMARY="${SUMMARY//$'\n'/%0A}" 
-          
-          # Set the output variable for the next step to use
-          echo "SUMMARY=${ESCAPED_SUMMARY}" >> $GITHUB_OUTPUT
+          # Try Copilot CLI first (if available)
+          if command -v github-copilot; then
+            COPILOT_SUMMARY=$(github-copilot pr summarize --pr $PR_NUMBER || echo "")
+          else
+            # Fallback: Use gh models if Copilot CLI not available
+            PROMPT="Summarize the following Pull Request:\n$PR_DIFF\nReply with a concise summary paragraph and bullet points about the changes and their impact."
+            COPILOT_SUMMARY=$(gh models generate --model openai/gpt-4o --prompt "$PROMPT" --json | jq -r '.choices[0].message.content' || echo "")
+          fi
 
-      # 3. Setup Python for sending the email
+          # Markdown to HTML conversion for better email formatting (optional)
+          COPILOT_SUMMARY_HTML=$(echo "$COPILOT_SUMMARY" | sed 's/$/<br>/')
+          PR_DIFF_HTML=$(echo "$PR_DIFF" | sed 's/$/<br>/')
+
+          # Escape summary for output
+          ESCAPED_SUMMARY="${COPILOT_SUMMARY_HTML//$'\n'/%0A}"
+          ESCAPED_DIFF="${PR_DIFF_HTML//$'\n'/%0A}"
+          
+          echo "SUMMARY=${ESCAPED_SUMMARY}" >> $GITHUB_OUTPUT
+          echo "DIFF=${ESCAPED_DIFF}" >> $GITHUB_OUTPUT
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      # 4. Send the Email with the AI-generated Summary via Python Script
+      # Send Email with Copilot Summary and PR Diff
       - name: Send Summary Email via Python
         env:
-          # Define environment variables for the Python script
           EMAIL_SERVER: ${{ secrets.EMAIL_SERVER }}
           EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TO: 'harsh.sharma@atrium.ai'
-          EMAIL_SUBJECT: "✅ GITHUB PR MERGE: PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }} "
-          
-          # Construct the body of the email in an environment variable
+          EMAIL_SUBJECT: "✅ GITHUB PR MERGE: PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}"
           EMAIL_BODY: |
             <html><body>
-              <h1>AI-Generated Pull Request Summary</h1>
+              <h1>Copilot AI-Powered PR Summary</h1>
               <hr>
               <p>A Pull Request has been successfully <strong>MERGED</strong> into the <code>main</code> branch.</p>
               <p><strong>PR Title:</strong> <b>${{ github.event.pull_request.title }}</b></p>
               <p><strong>Author:</strong> @${{ github.event.pull_request.user.login }}</p>
-              
-              <h3>Automated PR Summary</h3>
+              <h3>Copilot Summary</h3>
               <div style="padding: 10px; border: 1px solid #ccc; background-color: #f9f9f9;">
                 ${{ steps.ai_summary.outputs.SUMMARY }}
+              </div>
+              <h3>PR Code Changes</h3>
+              <div style="padding: 10px; border: 1px solid #eee; background-color: #f5f5f5;font-family:monospace;font-size:13px;">
+                ${{ steps.ai_summary.outputs.DIFF }}
               </div>
               <hr>
               <p><a href="${{ github.event.pull_request.html_url }}">View the Pull Request</a></p>
             </body></html>
-
         run: |
           python - <<EOF
           import smtplib
           from email.mime.text import MIMEText
           import os
-          
-          # Fetch environment variables
+
           sender = os.environ['EMAIL_USERNAME']
           receiver = os.environ['EMAIL_TO']
           subject = os.environ['EMAIL_SUBJECT']
           body = os.environ['EMAIL_BODY']
-          
-          # Create message object (using HTML for rich text formatting)
+
           msg = MIMEText(body, 'html')
           msg['Subject'] = subject
           msg['From'] = sender
           msg['To'] = receiver
 
-          # Send the email
           try:
               server = smtplib.SMTP(os.environ['EMAIL_SERVER'], int(os.environ['EMAIL_PORT']))
               server.starttls()
               server.login(os.environ['EMAIL_USERNAME'], os.environ['EMAIL_PASSWORD'])
-              
               server.sendmail(sender, [receiver], msg.as_string())
               print("Email sent successfully!")
-              
           except Exception as e:
-              # Log the error without revealing sensitive credentials
               print(f"Failed to send email. Check your secrets and port settings: {e}")
-              exit(1) # Fail the action if the email could not be sent
+              exit(1)
           finally:
               server.quit()
           EOF
