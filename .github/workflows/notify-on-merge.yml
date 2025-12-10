@@ -68,17 +68,22 @@ jobs:
       # Send Email with Copilot Summary and PR Diff
       - name: Send Summary Email via Python
         env:
+          # --- Secrets (remain the same) ---
           EMAIL_SERVER: ${{ secrets.EMAIL_SERVER }}
           EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_TO: 'harsh.sharma@atrium.ai'
-          EMAIL_SUBJECT: "✅ GITHUB PR MERGE: PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}"
-          EMAIL_BODY: |
-            <html><body>
-              <h1>Copilot AI-Powered PR Summary</h1>
-              <div style="padding: 15px; border-left: 5px solid #28a745; background-color: #f7fff7;">
-                ${{ steps.ai_summary.outputs.SUMMARY }}
-              </div>
-              </body></html>
+          # --- Recipients and Subject ---
+          EMAIL_TO: '105shubhamnks@gmail.com'
+          EMAIL_SUBJECT: "✅ PR MERGE: PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}"
+          # --- PR Metadata ---
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          # --- AI Outputs ---
+          SUMMARY_OUTPUT: ${{ steps.ai_summary.outputs.SUMMARY }}
+          DIFF_OUTPUT: ${{ steps.ai_summary.outputs.DIFF }}
+          
         run: python .github/scripts/send_email.py
