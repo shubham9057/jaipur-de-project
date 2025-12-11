@@ -32,33 +32,33 @@ jobs:
           npm install -g @githubnext/github-copilot-cli || true
 
       - name: Generate Copilot PR Summary (Fallback to Models if CLI not available)
-        id: ai_summary
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          # Get the PR diff
-          PR_DIFF=$(gh pr diff $PR_NUMBER --patch)
+        id: ai_summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # 1. Get the PR diff
+          PR_DIFF=$(gh pr diff $PR_NUMBER --patch)
 
-          # Try Copilot CLI first (if available)
-          if command -v github-copilot; then
-            COPILOT_SUMMARY=$(github-copilot pr summarize --pr $PR_NUMBER || echo "")
-          else
-            # Fallback: Use gh models if Copilot CLI not available
-            PROMPT="Summarize the following Pull Request:\n$PR_DIFF\nReply with a concise summary paragraph and bullet points about the changes and their impact."
-            COPILOT_SUMMARY=$(gh models generate --model openai/gpt-4o --prompt "$PROMPT" --json | jq -r '.choices[0].message.content' || echo "")
-          fi
+          # 2. Try Copilot CLI first
+          if command -v github-copilot; then
+            # Use Copilot CLI (if authorized)
+            COPILOT_SUMMARY=$(github-copilot pr summarize --pr $PR_NUMBER || echo "")
+          else
+            # 3. Fallback: Use gh models
+            PROMPT="Summarize the following Pull Request:\n$PR_DIFF\nReply with a concise summary paragraph and bullet points about the changes and their impact."
+            # Note: Using .[0].text is the common corrected jq filter for gh models generate
+            COPILOT_SUMMARY=$(gh models generate --model openai/gpt-4o --prompt "$PROMPT" --json | jq -r '.[0].text' || echo "")
+          fi
 
-          # Markdown to HTML conversion for better email formatting (optional)
-          COPILOT_SUMMARY_HTML=$(echo "$COPILOT_SUMMARY" | sed 's/$/<br>/')
-          PR_DIFF_HTML=$(echo "$PR_DIFF" | sed 's/$/<br>/')
+          # 4. Convert newlines to HTML <br> tags for email formatting
+          # Use awk to robustly replace newlines (\n) with <br>
+          SUMMARY_HTML=$(echo "$COPILOT_SUMMARY" | awk '{print $0"<br>"}' ORS='')
+          DIFF_HTML=$(echo "$PR_DIFF" | awk '{print $0"<br>"}' ORS='')
 
-          # Escape summary for output
-          ESCAPED_SUMMARY="${COPILOT_SUMMARY_HTML//$'\n'/%0A}"
-          ESCAPED_DIFF="${PR_DIFF_HTML//$'\n'/%0A}"
-          
-          echo "SUMMARY=${ESCAPED_SUMMARY}" >> $GITHUB_OUTPUT
-          echo "DIFF=${ESCAPED_DIFF}" >> $GITHUB_OUTPUT
+          # 5. Set the output variables
+          echo "SUMMARY=${SUMMARY_HTML}" >> $GITHUB_OUTPUT
+          echo "DIFF=${DIFF_HTML}" >> $GITHUB_OUTPUT
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -68,55 +68,22 @@ jobs:
       # Send Email with Copilot Summary and PR Diff
       - name: Send Summary Email via Python
         env:
+          # --- Secrets (remain the same) ---
           EMAIL_SERVER: ${{ secrets.EMAIL_SERVER }}
           EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_TO: 'harsh.sharma@atrium.ai'
-          EMAIL_SUBJECT: "✅ GITHUB PR MERGE: PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}"
-          EMAIL_BODY: |
-            <html><body>
-              <h1>Copilot AI-Powered PR Summary</h1>
-              <hr>
-              <p>A Pull Request has been successfully <strong>MERGED</strong> into the <code>main</code> branch.</p>
-              <p><strong>PR Title:</strong> <b>${{ github.event.pull_request.title }}</b></p>
-              <p><strong>Author:</strong> @${{ github.event.pull_request.user.login }}</p>
-              <h3>Copilot Summary</h3>
-              <div style="padding: 10px; border: 1px solid #ccc; background-color: #f9f9f9;">
-                ${{ steps.ai_summary.outputs.SUMMARY }}
-              </div>
-              <h3>PR Code Changes</h3>
-              <div style="padding: 10px; border: 1px solid #eee; background-color: #f5f5f5;font-family:monospace;font-size:13px;">
-                ${{ steps.ai_summary.outputs.DIFF }}
-              </div>
-              <hr>
-              <p><a href="${{ github.event.pull_request.html_url }}">View the Pull Request</a></p>
-            </body></html>
-        run: |
-          python - <<EOF
-          import smtplib
-          from email.mime.text import MIMEText
-          import os
-
-          sender = os.environ['EMAIL_USERNAME']
-          receiver = os.environ['EMAIL_TO']
-          subject = os.environ['EMAIL_SUBJECT']
-          body = os.environ['EMAIL_BODY']
-
-          msg = MIMEText(body, 'html')
-          msg['Subject'] = subject
-          msg['From'] = sender
-          msg['To'] = receiver
-
-          try:
-              server = smtplib.SMTP(os.environ['EMAIL_SERVER'], int(os.environ['EMAIL_PORT']))
-              server.starttls()
-              server.login(os.environ['EMAIL_USERNAME'], os.environ['EMAIL_PASSWORD'])
-              server.sendmail(sender, [receiver], msg.as_string())
-              print("Email sent successfully!")
-          except Exception as e:
-              print(f"Failed to send email. Check your secrets and port settings: {e}")
-              exit(1)
-          finally:
-              server.quit()
-          EOF
+          # --- Recipients and Subject ---
+          EMAIL_TO: '105shubhamnks@gmail.com'
+          EMAIL_SUBJECT: "✅ PR MERGE: PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}"
+          # --- PR Metadata ---
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          # --- AI Outputs ---
+          SUMMARY_OUTPUT: ${{ steps.ai_summary.outputs.SUMMARY }}
+          DIFF_OUTPUT: ${{ steps.ai_summary.outputs.DIFF }}
+          
+        run: python .github/scripts/send_email.py
