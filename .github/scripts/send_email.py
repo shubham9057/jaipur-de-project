@@ -26,10 +26,10 @@ def send_email(summary_file, diff_file):
 
     config = {var: os.environ.get(var) for var in env_vars}
 
-    if not all(config.values()):
-        missing = [var for var, val in config.items() if not val]
-        print(f"FATAL ERROR: Missing environment variables: {', '.join(missing)}")
-        sys.exit(1)
+    # if not all(config.values()):
+    #     missing = [var for var, val in config.items() if not val]
+    #     print(f"FATAL ERROR: Missing environment variables: {', '.join(missing)}")
+    #     sys.exit(1)
 
     # 3. Create HTML Body
     html_body = f"""
