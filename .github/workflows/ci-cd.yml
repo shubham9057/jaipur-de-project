@@ -2,8 +2,8 @@ name: dbt CI -> PROD
 on:
   pull_request:
     branches: ["main"]
-  push:
-    branches: ["main"]
+  # push:
+  #   branches: ["main"]
 
 permissions:
   contents: write
