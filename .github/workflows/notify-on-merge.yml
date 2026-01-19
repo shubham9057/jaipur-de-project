@@ -31,34 +31,25 @@ jobs:
           # Try to install Copilot CLI. Available if Copilot for CLI is enabled for your repo.
           npm install -g @githubnext/github-copilot-cli || true
 
-      - name: Generate Copilot PR Summary (Fallback to Models if CLI not available)
+      - name: Generate Copilot PR Summary
         id: ai_summary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          # 1.) Get the PR diff
-          PR_DIFF=$(gh pr diff $PR_NUMBER --patch)
-
-          # 2. Try Copilot CLI first
-          if command -v github-copilot; then
-            # Use Copilot CLI (if authorized)
-            COPILOT_SUMMARY=$(github-copilot pr summarize --pr $PR_NUMBER || echo "")
-          else
-            # 3. Fallback: Use gh models
-            PROMPT="Summarize the following Pull Request:\n$PR_DIFF\nReply with a concise summary paragraph and bullet points about the changes and their impact."
-            # Note: Using .[0].text is the common corrected jq filter for gh models generate
-            COPILOT_SUMMARY=$(gh models generate --model openai/gpt-4o --prompt "$PROMPT" --json | jq -r '.[0].text' || echo "")
-          fi
-
-          # 4. Convert newlines to HTML <br> tags for email formatting
-          # Use awk to robustly replace newlines (\n) with <br>
-          SUMMARY_HTML=$(echo "$COPILOT_SUMMARY" | awk '{print $0"<br>"}' ORS='')
-          DIFF_HTML=$(echo "$PR_DIFF" | awk '{print $0"<br>"}' ORS='')
-
-          # 5. Set the output variables
-          echo "SUMMARY=${SUMMARY_HTML}" >> $GITHUB_OUTPUT
-          echo "DIFF=${DIFF_HTML}" >> $GITHUB_OUTPUT
+          # Get the diff
+          gh pr diff $PR_NUMBER --patch > pr_diff.txt
+          
+          # NEW PROMPT: Focused on file-level changes
+          PROMPT="Act as a technical lead. Analyze this PR diff and provide:
+          1. A high-level summary of the goal.
+          2. A file-by-file breakdown. For each file, list what was added, removed, or changed and WHY.
+          3. Use markdown bolding for filenames.
+          
+          DIFF:
+          $(cat pr_diff.txt | head -n 200)" # Sending first 200 lines for context
+          
+          gh models generate --model openai/gpt-4o --prompt "$PROMPT" > pr_summary.txt
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -68,22 +59,16 @@ jobs:
       # Send Email with Copilot Summary and PR Diff
       - name: Send Summary Email via Python
         env:
-          # --- Secrets (remain the same) ---
+          # --- Email Secrets ---
           EMAIL_SERVER: ${{ secrets.EMAIL_SERVER }}
           EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          # --- Recipients and Subject ---
-          EMAIL_TO: '105shubhamnks@gmail.com'
-          EMAIL_SUBJECT: "✅ PR MERGE: PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}"
           # --- PR Metadata ---
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-          # --- AI Outputs ---
-          SUMMARY_OUTPUT: ${{ steps.ai_summary.outputs.SUMMARY }}
-          DIFF_OUTPUT: ${{ steps.ai_summary.outputs.DIFF }}
-          
-        run: python .github/scripts/send_email.py
+        # Pass the filenames as arguments to the script  
+        run: python .github/scripts/send_email.py pr_summary.txt pr_diff.txt
