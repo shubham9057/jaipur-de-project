@@ -52,7 +52,7 @@ jobs:
           DIFF:
           $(cat pr_diff.txt | head -n 200)" # Sending first 200 lines for context
           
-          gh models generate --model openai/gpt-4o --prompt "$PROMPT" > pr_summary.txt
+          gh models generate --prompt "$PROMPT" > pr_summary.txt
 
       - name: Setup Python
         uses: actions/setup-python@v5
