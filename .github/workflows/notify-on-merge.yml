@@ -4,11 +4,13 @@ on:
   pull_request:
     types: [closed]
     branches: [main]
+  push:
+    branches: ["SS/workflow-fix"]
 
 jobs:
   send_email:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.merged == true
+    # if: github.event.pull_request.merged == true
 
     permissions:
       contents: read
