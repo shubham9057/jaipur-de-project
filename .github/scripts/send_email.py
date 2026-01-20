@@ -57,15 +57,15 @@ def send_email(summary_file, diff_file):
 
     msg = MIMEMultipart('alternative')
     msg.attach(MIMEText(html_body, 'html'))
-    msg['Subject'] = f"✅ PR MERGED: PR #{config('PR_TITLE')} - {config('PR_TITLE')}"
+    msg['Subject'] = f"✅ PR MERGED: PR #{config['PR_TITLE']} - {config['PR_TITLE']}"
     msg['From'] = config['EMAIL_USERNAME']
     msg['To'] = ", ".join(receivers_list)
 
     # 5. Send Email
     try:
-        server = smtplib.SMTP(config('EMAIL_SERVER'), int(config('EMAIL_PORT')))
+        server = smtplib.SMTP(config['EMAIL_SERVER'], int(config['EMAIL_PORT']))
         server.starttls()
-        server.login(sender, config('EMAIL_PASSWORD'))
+        server.login(sender, config['EMAIL_PASSWORD'])
         server.sendmail(config['EMAIL_USERNAME'], receivers_list, msg.as_string())
         server.quit()
         print("Email sent successfully!")
