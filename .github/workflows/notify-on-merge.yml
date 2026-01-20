@@ -54,7 +54,7 @@ jobs:
           $(head -n 100 pr_diff.txt)
           EOF
           
-          cat prompt.txt | gh models generate --model openai/gpt-4o > pr_summary.txt
+          cat prompt.txt | gh models generate --groundtruth-model openai/gpt-4o > pr_summary.txt
 
       - name: Setup Python
         uses: actions/setup-python@v5
