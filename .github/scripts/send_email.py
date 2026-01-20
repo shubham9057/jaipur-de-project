@@ -65,7 +65,7 @@ def send_email(summary_file, diff_file):
     try:
         server = smtplib.SMTP(config['EMAIL_SERVER'], int(config['EMAIL_PORT']))
         server.starttls()
-        server.login(sender, config['EMAIL_PASSWORD'])
+        server.login(config['EMAIL_USERNAME'], config['EMAIL_PASSWORD'])
         server.sendmail(config['EMAIL_USERNAME'], receivers_list, msg.as_string())
         server.quit()
         print("Email sent successfully!")
