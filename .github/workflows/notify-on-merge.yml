@@ -54,7 +54,7 @@ jobs:
           $(head -n 100 pr_diff.txt)
           EOF
           
-          gh models generate "$(cat prompt.txt)" --json | jq -r '.[0].text' > pr_summary.txt
+          cat prompt.txt | gh models generate --json | jq -r '.choices[0].message.content' > pr_summary.txt
 
       - name: Setup Python
         uses: actions/setup-python@v5
