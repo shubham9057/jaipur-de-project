@@ -36,7 +36,7 @@ def send_email(summary_file, diff_file):
     <html>
       <body style="font-family: sans-serif; color: #333;">
         <h2>Copilot AI PR Summary</h2>
-        <p><b>Author:</b> @{config('PR_AUTHOR')}</p>
+        <p><b>Author:</b> @{config['PR_AUTHOR']}</p>
         <hr>
         <div style="background: #f4f7f6; padding: 15px; border-radius: 5px; border: 1px solid #ddd;">
           {summary_content}
@@ -46,7 +46,7 @@ def send_email(summary_file, diff_file):
           {diff_content}
         </pre>
         <br>
-        <a href="{config('PR_URL')}" style="padding: 10px 20px; background: #2ea44f; color: white; text-decoration: none; border-radius: 5px;">View on GitHub</a>
+        <a href="{config['PR_URL']}" style="padding: 10px 20px; background: #2ea44f; color: white; text-decoration: none; border-radius: 5px;">View on GitHub</a>
       </body>
     </html>
     """
