@@ -55,8 +55,8 @@ def send_email(summary_file, diff_file):
     
     receivers_list = ['105shubhamnks@gmail.com', 'shubham.singhal@atrium.ai']
 
-    msg.attach(MIMEText(html_body, 'html'))
     msg = MIMEMultipart('alternative')
+    msg.attach(MIMEText(html_body, 'html'))
     msg['Subject'] = f"✅ PR MERGED: PR #{config('PR_TITLE')} - {config('PR_TITLE')}"
     msg['From'] = config['EMAIL_USERNAME']
     msg['To'] = ", ".join(receivers_list)
