@@ -44,15 +44,17 @@ jobs:
           gh pr diff $PR_NUMBER --patch > pr_diff.txt
           
           # NEW PROMPT: Focused on file-level changes
-          PROMPT="Act as a technical lead. Analyze this PR diff and provide:
+          cat <<EOF > prompt.txt
+          Act as a technical lead. Analyze this PR diff and provide:
           1. A high-level summary of the goal.
           2. A file-by-file breakdown. For each file, list what was added, removed, or changed and WHY.
           3. Use markdown bolding for filenames.
-          
+
           DIFF:
-          $(cat pr_diff.txt | head -n 200)" # Sending first 200 lines for context
+          $(head -n 100 pr_diff.txt)
+          EOF
           
-          gh models generate "$PROMPT" > pr_summary.txt
+          gh models generate "$(cat prompt.txt)" --json | jq -r '.[0].text' > pr_summary.txt
 
       - name: Setup Python
         uses: actions/setup-python@v5
