@@ -1,77 +1,198 @@
-name: PR Merge AI Summary Notification via Copilot
+name: Notify on Content Published
 
 on:
   pull_request:
     types: [closed]
-    branches: [main]
-  push:
-    branches: ["main"]
+    branches:
+      - main
 
 jobs:
-  send_email:
-    runs-on: ubuntu-latest
+  notify:
+    # Only run when the PR is actually merged (not just closed)
     if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
 
+    # Grant the built-in GITHUB_TOKEN read access to repo contents.
+    # This is the only permission needed — no extra secrets required.
     permissions:
       contents: read
-      pull-requests: read
 
     steps:
-      - name: Checkout Code
+      # ── 1. Checkout so we can read changed files AND the email template ────
+      - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Setup GitHub CLI
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          sudo apt-get update && sudo apt-get install -y gh
-
-      # Install Copilot CLI if available - fallback to models if not
-      - name: Attempt Copilot CLI Install
-        continue-on-error: true
-        run: |
-          # Try to install Copilot CLI. Available if Copilot for CLI is enabled for your repo.
-          npm install -g @githubnext/github-copilot-cli || true
-
-      - name: Generate Copilot PR Summary
-        id: ai_summary
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          gh extension install github/gh-models
-          # Get the diff
-          gh pr diff $PR_NUMBER --patch > pr_diff.txt
-          
-          # NEW PROMPT: Focused on file-level changes
-          PROMPT="Act as a technical lead. Analyze this PR diff and provide:
-          1. A high-level summary of the goal.
-          2. A file-by-file breakdown. For each file, list what was added, removed, or changed and WHY.
-          3. Use markdown bolding for filenames.
-          
-          DIFF:
-          $(cat pr_diff.txt | head -n 200)" # Sending first 200 lines for context
-          
-          gh models generate --model openai/gpt-4o --prompt "$PROMPT" > pr_summary.txt
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          fetch-depth: 0          # full history needed for diff
 
-      # Send Email with Copilot Summary and PR Diff
-      - name: Send Summary Email via Python
+      # ── 2. Collect changed files & their content ───────────────────────────
+      - name: Gather changed files
+        id: changed
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+
+          # List added/modified content files only (cap at 20)
+          FILES=$(git diff --name-only --diff-filter=AM "$BASE" "$HEAD" \
+                  | grep -E '\.(md|mdx|txt|json|yaml|yml|rst|html)$' \
+                  | head -20)
+
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$FILES"     >> "$GITHUB_OUTPUT"
+          echo "EOF"        >> "$GITHUB_OUTPUT"
+
+          # Concatenate file contents (3 KB per file to stay within token limits)
+          CONTENT=""
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            CONTENT+="### File: $f"$'\n'
+            CONTENT+="$(head -c 3000 "$f")"$'\n\n'
+          done <<< "$FILES"
+
+          echo "$CONTENT" > /tmp/pr_content.txt
+
+          FILE_COUNT=$(echo "$FILES" | grep -c '\S' || true)
+          echo "file_count=$FILE_COUNT" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Generate summary via GitHub Models (free, uses GITHUB_TOKEN) ────
+      #
+      #  Endpoint : https://models.inference.ai.azure.com
+      #  Auth     : Bearer $GITHUB_TOKEN  (auto-injected, no secret needed)
+      #  Model    : meta/Llama-3.3-70B-Instruct  (free for all GitHub users)
+      #  Limits   : 15 RPM / 150 RPD on the free Copilot tier — plenty for
+      #             a knowledge-base that merges content a handful of times a day.
+      #
+      #  Other free models you can swap in:
+      #    • gpt-4o-mini              (OpenAI, faster / lighter)
+      #    • Phi-4                    (Microsoft, very capable for summarisation)
+      #    • mistral-small            (Mistral AI)
+      #    • DeepSeek-R1              (DeepSeek, strong reasoning)
+      # ─────────────────────────────────────────────────────────────────────────
+      - name: Generate content summary via GitHub Models
+        id: summary
         env:
-          # --- Email Secrets ---
-          EMAIL_SERVER: ${{ secrets.EMAIL_SERVER }}
-          EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
-          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          # --- PR Metadata ---
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        # Pass the filenames as arguments to the script  
-        run: python .github/scripts/send_email.py pr_summary.txt pr_diff.txt
+          GH_TOKEN:    ${{ github.token }}   # built-in, no setup required
+          PR_TITLE:    ${{ github.event.pull_request.title }}
+          PR_BODY:     ${{ github.event.pull_request.body }}
+          WEBSITE_URL: ${{ vars.WEBSITE_URL }}
+        run: |
+          CONTENT=$(cat /tmp/pr_content.txt)
+
+          # Build the JSON payload with jq so special chars are safely escaped
+          PAYLOAD=$(jq -n \
+            --arg title   "$PR_TITLE" \
+            --arg body    "$PR_BODY" \
+            --arg content "$CONTENT" \
+            --arg url     "$WEBSITE_URL" \
+            '{
+              model: "meta/Llama-3.3-70B-Instruct",
+              max_tokens: 512,
+              messages: [
+                {
+                  role: "system",
+                  content: "You are a technical writer for a data engineering knowledge base. Write clear, concise summaries for a developer audience."
+                },
+                {
+                  role: "user",
+                  content: ("New content has just been published to the website at " + $url + ".\n\nPR Title: " + $title + "\nPR Description: " + $body + "\n\nChanged / added files:\n" + $content + "\n\nWrite a concise, friendly summary (3-5 sentences) for subscribers explaining:\n1. What topic or concept was just published.\n2. Why it is useful for data engineers.\n3. A one-line teaser encouraging them to visit the site.\n\nReturn ONLY the summary text. No markdown, no bullet points, no preamble.")
+                }
+              ]
+            }')
+
+          # Call GitHub Models endpoint — uses the built-in GITHUB_TOKEN
+          RESPONSE=$(curl -s \
+            -X POST "https://models.inference.ai.azure.com/chat/completions" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+
+          # Extract the reply; fall back gracefully if the call fails
+          AI_SUMMARY=$(echo "$RESPONSE" | jq -r '
+            if .choices then
+              .choices[0].message.content
+            else
+              "New content has been published to the knowledge base. Visit the website to see what is new."
+            end')
+
+          # Escape for GitHub Actions output
+          AI_SUMMARY="${AI_SUMMARY//'%'/'%25'}"
+          AI_SUMMARY="${AI_SUMMARY//$'\n'/'%0A'}"
+          AI_SUMMARY="${AI_SUMMARY//$'\r'/'%0D'}"
+
+          echo "ai_summary=$AI_SUMMARY" >> "$GITHUB_OUTPUT"
+
+      # ── 4. Render the email template ───────────────────────────────────────
+      - name: Render email from template
+        id: email
+        env:
+          PR_TITLE:    ${{ github.event.pull_request.title }}
+          PR_AUTHOR:   ${{ github.event.pull_request.user.login }}
+          PR_NUMBER:   ${{ github.event.pull_request.number }}
+          PR_URL:      ${{ github.event.pull_request.html_url }}
+          MERGED_AT:   ${{ github.event.pull_request.merged_at }}
+          WEBSITE_URL: ${{ vars.WEBSITE_URL }}
+          REPO_NAME:   ${{ github.repository }}
+          AI_SUMMARY:  ${{ steps.summary.outputs.ai_summary }}
+          FILES_LIST:  ${{ steps.changed.outputs.files }}
+          FILE_COUNT:  ${{ steps.changed.outputs.file_count }}
+        run: |
+          # Restore newlines in the AI summary
+          AI_SUMMARY=$(printf '%b' "${AI_SUMMARY//'%0A'/$'\n'}")
+
+          # Human-readable merge date
+          MERGED_DATE=$(date -d "$MERGED_AT" "+%B %d, %Y at %H:%M UTC" 2>/dev/null \
+                        || echo "$MERGED_AT")
+
+          CURRENT_YEAR=$(date +%Y)
+
+          # Build <li> rows for the changed-files list
+          FILE_ROWS=""
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            FILE_ROWS+="<li style=\"padding:4px 0;color:#4B5563;font-size:13px;font-family:monospace\">${f}</li>"
+          done <<< "$FILES_LIST"
+
+          # Export every variable that the template references
+          export PR_TITLE MERGED_DATE WEBSITE_URL AI_SUMMARY \
+                 FILE_COUNT FILE_ROWS PR_AUTHOR PR_URL PR_NUMBER \
+                 REPO_NAME CURRENT_YEAR
+
+          # Substitute only our named placeholders; leave CSS $ signs untouched
+          VARS='${PR_TITLE} ${MERGED_DATE} ${WEBSITE_URL} ${AI_SUMMARY}
+                ${FILE_COUNT} ${FILE_ROWS} ${PR_AUTHOR} ${PR_URL}
+                ${PR_NUMBER} ${REPO_NAME} ${CURRENT_YEAR}'
+
+          envsubst "$VARS" \
+            < .github/email-templates/notify-on-merge.html \
+            > /tmp/email_body.html
+
+          # Plain-text fallback
+          cat > /tmp/email_plain.txt << TXTEOF
+          New Content Published – ${PR_TITLE}
+
+          ${AI_SUMMARY}
+
+          Visit the website: ${WEBSITE_URL}
+
+          Files updated (${FILE_COUNT}):
+          ${FILES_LIST}
+
+          Published by @${PR_AUTHOR} on ${MERGED_DATE}
+          PR: ${PR_URL}
+          TXTEOF
+
+      # ── 5. Send the email ──────────────────────────────────────────────────
+      - name: Send notification email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_HOST }}
+          server_port:    ${{ secrets.SMTP_PORT }}
+          username:       ${{ secrets.SMTP_USERNAME }}
+          password:       ${{ secrets.SMTP_PASSWORD }}
+          from:    "DE Knowledge Base <${{ secrets.MAIL_FROM }}>"
+          to:      ${{ secrets.MAIL_TO }}
+          subject: "📘 New Published: ${{ github.event.pull_request.title }}"
+          html_body:  file:///tmp/email_body.html
+          body:       file:///tmp/email_plain.txt
+          ignore_cert: false
+          convert_markdown: false
+          priority: normal
