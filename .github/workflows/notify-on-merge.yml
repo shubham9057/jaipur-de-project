@@ -8,21 +8,18 @@ on:
 
 jobs:
   notify:
-    # Only run when the PR is actually merged (not just closed)
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
 
-    # Grant the built-in GITHUB_TOKEN read access to repo contents.
-    # This is the only permission needed — no extra secrets required.
     permissions:
       contents: read
 
     steps:
-      # ── 1. Checkout so we can read changed files AND the email template ────
+      # ── 1. Checkout ────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0          # full history needed for diff
+          fetch-depth: 0
 
       # ── 2. Collect changed files & their content ───────────────────────────
       - name: Gather changed files
@@ -31,154 +28,193 @@ jobs:
           BASE=${{ github.event.pull_request.base.sha }}
           HEAD=${{ github.event.pull_request.head.sha }}
 
-          # List added/modified content files only (cap at 20)
           FILES=$(git diff --name-only --diff-filter=AM "$BASE" "$HEAD" \
-                  | grep -E '\.(md|mdx|txt|json|yaml|yml|rst|html)$' \
+                  | grep -E '\.(md|mdx|txt|rst)$' \
                   | head -20)
 
           echo "files<<EOF" >> "$GITHUB_OUTPUT"
           echo "$FILES"     >> "$GITHUB_OUTPUT"
           echo "EOF"        >> "$GITHUB_OUTPUT"
 
-          # Concatenate file contents (3 KB per file to stay within token limits)
-          CONTENT=""
+          # Build a JSON array: [{file, content}, ...]
+          # Each file gets up to 3 KB of content
+          JSON_ARRAY="["
+          FIRST=true
           while IFS= read -r f; do
             [ -z "$f" ] && continue
-            CONTENT+="### File: $f"$'\n'
-            CONTENT+="$(head -c 3000 "$f")"$'\n\n'
+            CONTENT=$(head -c 3000 "$f" | jq -Rs .)
+            FILE_JSON=$(jq -n --arg f "$f" --argjson c "$CONTENT" '{file: $f, content: $c}')
+            if [ "$FIRST" = true ]; then
+              JSON_ARRAY+="$FILE_JSON"
+              FIRST=false
+            else
+              JSON_ARRAY+=",$FILE_JSON"
+            fi
           done <<< "$FILES"
+          JSON_ARRAY+="]"
 
-          echo "$CONTENT" > /tmp/pr_content.txt
+          echo "$JSON_ARRAY" > /tmp/pr_files.json
 
-          FILE_COUNT=$(echo "$FILES" | grep -c '\S' || true)
-          echo "file_count=$FILE_COUNT" >> "$GITHUB_OUTPUT"
-
-      # ── 3. Generate summary via GitHub Models (free, uses GITHUB_TOKEN) ────
+      # ── 3. Generate per-file title + summary via GitHub Models ─────────────
       #
-      #  Endpoint : https://models.inference.ai.azure.com
-      #  Auth     : Bearer $GITHUB_TOKEN  (auto-injected, no secret needed)
-      #  Model    : meta/Llama-3.3-70B-Instruct  (free for all GitHub users)
-      #  Limits   : 15 RPM / 150 RPD on the free Copilot tier — plenty for
-      #             a knowledge-base that merges content a handful of times a day.
+      #  The LLM is asked to return a JSON array — one object per file:
+      #    [{ "file": "path/to/file.md",
+      #       "title": "Human-readable article title",
+      #       "summary": "2-3 sentence summary" }, ...]
       #
-      #  Other free models you can swap in:
-      #    • gpt-4o-mini              (OpenAI, faster / lighter)
-      #    • Phi-4                    (Microsoft, very capable for summarisation)
-      #    • mistral-small            (Mistral AI)
-      #    • DeepSeek-R1              (DeepSeek, strong reasoning)
       # ─────────────────────────────────────────────────────────────────────────
-      - name: Generate content summary via GitHub Models
+      - name: Generate per-file summaries via GitHub Models
         id: summary
         env:
-          GH_TOKEN:    ${{ github.token }}   # built-in, no setup required
-          PR_TITLE:    ${{ github.event.pull_request.title }}
-          PR_BODY:     ${{ github.event.pull_request.body }}
+          GH_TOKEN:    ${{ github.token }}
           WEBSITE_URL: ${{ vars.WEBSITE_URL }}
         run: |
-          CONTENT=$(cat /tmp/pr_content.txt)
+          FILES_JSON=$(cat /tmp/pr_files.json)
 
-          # Build the JSON payload with jq so special chars are safely escaped
           PAYLOAD=$(jq -n \
-            --arg title   "$PR_TITLE" \
-            --arg body    "$PR_BODY" \
-            --arg content "$CONTENT" \
-            --arg url     "$WEBSITE_URL" \
+            --argjson files "$FILES_JSON" \
+            --arg url "$WEBSITE_URL" \
             '{
               model: "meta/Llama-3.3-70B-Instruct",
-              max_tokens: 512,
+              max_tokens: 1024,
               messages: [
                 {
                   role: "system",
-                  content: "You are a technical writer for a data engineering knowledge base. Write clear, concise summaries for a developer audience."
+                  content: "You are a technical writer for Alexandria, a data engineering knowledge base. Return only valid JSON — no markdown, no code fences, no extra text."
                 },
                 {
                   role: "user",
-                  content: ("New content has just been published to the website at " + $url + ".\n\nPR Title: " + $title + "\nPR Description: " + $body + "\n\nChanged / added files:\n" + $content + "\n\nWrite a concise, friendly summary (3-5 sentences) for subscribers explaining:\n1. What topic or concept was just published.\n2. Why it is useful for data engineers.\n3. A one-line teaser encouraging them to visit the site.\n\nReturn ONLY the summary text. No markdown, no bullet points, no preamble.")
+                  content: ("For each file below, extract the article title from the content (use the first H1 heading or the most prominent title in the text — NOT the filename) and write a 2-3 sentence summary explaining what the article covers and why it is useful for data engineers.\n\nReturn a JSON array with exactly one object per file:\n[\n  {\n    \"file\": \"<original file path>\",\n    \"title\": \"<article title from content>\",\n    \"summary\": \"<2-3 sentence summary>\"\n  }\n]\n\nFiles:\n" + ($files | tostring))
                 }
               ]
             }')
 
-          # Call GitHub Models endpoint — uses the built-in GITHUB_TOKEN
           RESPONSE=$(curl -s \
             -X POST "https://models.inference.ai.azure.com/chat/completions" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
 
-          # Extract the reply; fall back gracefully if the call fails
-          AI_SUMMARY=$(echo "$RESPONSE" | jq -r '
-            if .choices then
-              .choices[0].message.content
-            else
-              "New content has been published to the knowledge base. Visit the website to see what is new."
-            end')
+          # Extract the raw text reply
+          RAW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // "[]"')
 
-          # Escape for GitHub Actions output
-          AI_SUMMARY="${AI_SUMMARY//'%'/'%25'}"
-          AI_SUMMARY="${AI_SUMMARY//$'\n'/'%0A'}"
-          AI_SUMMARY="${AI_SUMMARY//$'\r'/'%0D'}"
+          # Strip any accidental markdown code fences the model may add
+          CLEAN=$(echo "$RAW" | sed 's/```json//g' | sed 's/```//g' | xargs)
 
-          echo "ai_summary=$AI_SUMMARY" >> "$GITHUB_OUTPUT"
+          # Validate it's parseable JSON; fall back to empty array if not
+          echo "$CLEAN" | jq . > /tmp/summaries.json 2>/dev/null \
+            || echo "[]" > /tmp/summaries.json
 
-      # ── 4. Render the email template ───────────────────────────────────────
+      # ── 4. Build ARTICLES_HTML and render the email template ───────────────
       - name: Render email from template
-        id: email
         env:
           PR_TITLE:    ${{ github.event.pull_request.title }}
-          PR_AUTHOR:   ${{ github.event.pull_request.user.login }}
-          PR_NUMBER:   ${{ github.event.pull_request.number }}
           PR_URL:      ${{ github.event.pull_request.html_url }}
           MERGED_AT:   ${{ github.event.pull_request.merged_at }}
           WEBSITE_URL: ${{ vars.WEBSITE_URL }}
           REPO_NAME:   ${{ github.repository }}
-          AI_SUMMARY:  ${{ steps.summary.outputs.ai_summary }}
-          FILES_LIST:  ${{ steps.changed.outputs.files }}
-          FILE_COUNT:  ${{ steps.changed.outputs.file_count }}
         run: |
-          # Restore newlines in the AI summary
-          AI_SUMMARY=$(printf '%b' "${AI_SUMMARY//'%0A'/$'\n'}")
-
-          # Human-readable merge date
           MERGED_DATE=$(date -d "$MERGED_AT" "+%B %d, %Y at %H:%M UTC" 2>/dev/null \
                         || echo "$MERGED_AT")
-
           CURRENT_YEAR=$(date +%Y)
 
-          # Build <li> rows for the changed-files list
-          FILE_ROWS=""
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            FILE_ROWS+="<li style=\"padding:4px 0;color:#4B5563;font-size:13px;font-family:monospace\">${f}</li>"
-          done <<< "$FILES_LIST"
+          # ── Derive a page URL from a file path ──────────────────────────
+          # Converts  "content/pipelines/kafka-intro.md"
+          #       →   "https://yoursite.com/pipelines/kafka-intro"
+          #
+          # Rules applied in order:
+          #   1. Strip a leading content/ or docs/ directory if present
+          #   2. Strip the file extension
+          #   3. Prepend WEBSITE_URL (trailing slash normalised)
+          # Adjust the sed expression below if your site uses a different structure.
+          derive_url() {
+            local filepath="$1"
+            local base_url="${WEBSITE_URL%/}"   # remove trailing slash if any
+            local page
+            page=$(echo "$filepath" \
+              | sed 's|^content/||; s|^docs/||' \   # strip common root dirs
+              | sed 's|\.[^.]*$||')                  # strip extension
+            echo "${base_url}/${page}"
+          }
 
-          # Export every variable that the template references
-          export PR_TITLE MERGED_DATE WEBSITE_URL AI_SUMMARY \
-                 FILE_COUNT FILE_ROWS PR_AUTHOR PR_URL PR_NUMBER \
+          # ── Build one HTML block per article ────────────────────────────
+          ARTICLES_HTML=""
+          COUNT=$(jq 'length' /tmp/summaries.json)
+
+          if [ "$COUNT" -eq 0 ]; then
+            # Graceful fallback — no per-file data available
+            ARTICLES_HTML='<p style="font-size:15px;line-height:1.75;color:#374151;">
+              New content has been published to the knowledge base.
+              Visit the website to see what is new.
+            </p>'
+          else
+            for i in $(seq 0 $(( COUNT - 1 )) ); do
+              FILE=$(jq -r ".[$i].file"    /tmp/summaries.json)
+              TITLE=$(jq -r ".[$i].title"  /tmp/summaries.json)
+              SUMM=$(jq -r  ".[$i].summary" /tmp/summaries.json)
+              PAGE_URL=$(derive_url "$FILE")
+
+              # Add a divider between articles (not before the first one)
+              if [ "$i" -gt 0 ]; then
+                ARTICLES_HTML+='<hr style="border:none;border-top:1px solid #E5E7EB;margin:0 0 24px;"/>'
+              fi
+
+              ARTICLES_HTML+="
+              <div style=\"margin-bottom:28px;\">
+                <h3 style=\"margin:0 0 10px;font-size:17px;font-weight:700;color:#1E3A5F;
+                            line-height:1.4;\">
+                  ${TITLE}
+                </h3>
+                <p style=\"margin:0 0 14px;font-size:15px;line-height:1.75;color:#374151;\">
+                  ${SUMM}
+                </p>
+                <a href=\"${PAGE_URL}\"
+                   style=\"display:inline-block;padding:9px 20px;font-size:13px;font-weight:600;
+                           color:#2563EB;text-decoration:none;border:2px solid #2563EB;
+                           border-radius:6px;\">
+                  Read Article &rarr;
+                </a>
+              </div>"
+            done
+          fi
+
+          # Append the main CTA button after all articles
+          ARTICLES_HTML+="
+          <div style=\"margin:32px 0 36px;\">
+            <table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\">
+              <tr>
+                <td style=\"border-radius:8px;
+                            background:linear-gradient(135deg,#2563EB,#1D4ED8);\">
+                  <a href=\"${WEBSITE_URL}\"
+                     style=\"display:inline-block;padding:14px 32px;font-size:15px;
+                             font-weight:600;color:#FFFFFF;text-decoration:none;\">
+                    Visit the Knowledge Base &rarr;
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </div>"
+
+          # Export vars for envsubst
+          export PR_TITLE MERGED_DATE WEBSITE_URL ARTICLES_HTML \
                  REPO_NAME CURRENT_YEAR
 
-          # Substitute only our named placeholders; leave CSS $ signs untouched
-          VARS='${PR_TITLE} ${MERGED_DATE} ${WEBSITE_URL} ${AI_SUMMARY}
-                ${FILE_COUNT} ${FILE_ROWS} ${PR_AUTHOR} ${PR_URL}
-                ${PR_NUMBER} ${REPO_NAME} ${CURRENT_YEAR}'
+          VARS='${PR_TITLE} ${MERGED_DATE} ${WEBSITE_URL} ${ARTICLES_HTML}
+                ${REPO_NAME} ${CURRENT_YEAR}'
 
           envsubst "$VARS" \
-            < .github/scripts/notify-on-merge.html \
+            < .github/email-templates/notify-on-merge.html \
             > /tmp/email_body.html
 
           # Plain-text fallback
-          cat > /tmp/email_plain.txt << TXTEOF
-          New Content Published – ${PR_TITLE}
-
-          ${AI_SUMMARY}
-
-          Visit the website: ${WEBSITE_URL}
-
-          Files updated (${FILE_COUNT}):
-          ${FILES_LIST}
-
-          Published by @${PR_AUTHOR} on ${MERGED_DATE}
-          PR: ${PR_URL}
-          TXTEOF
+          {
+            echo "New Content Published – ${PR_TITLE}"
+            echo ""
+            jq -r '.[] | "## \(.title)\n\(.summary)\n"' /tmp/summaries.json
+            echo "Visit the knowledge base: ${WEBSITE_URL}"
+            echo ""
+            echo "Published on ${MERGED_DATE}"
+          } > /tmp/email_plain.txt
 
       # ── 5. Send the email ──────────────────────────────────────────────────
       - name: Send notification email
@@ -188,9 +224,9 @@ jobs:
           server_port:    ${{ secrets.SMTP_PORT }}
           username:       ${{ secrets.SMTP_USERNAME }}
           password:       ${{ secrets.SMTP_PASSWORD }}
-          from:    "DE Knowledge Base <${{ secrets.MAIL_FROM }}>"
+          from:    "Alexandria – DE Knowledge Base <${{ secrets.MAIL_FROM }}>"
           to:      ${{ secrets.MAIL_TO }}
-          subject: "📘 New Published: ${{ github.event.pull_request.title }}"
+          subject: "📖 Alexandria Knowledge Base — New Content Published"
           html_body:  file:///tmp/email_body.html
           body:       file:///tmp/email_plain.txt
           ignore_cert: false
