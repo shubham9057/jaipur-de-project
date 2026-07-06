@@ -13,7 +13,6 @@ jobs:
 
     permissions:
       contents: read
-      models: read       # required to call the GitHub Models inference API
 
     steps:
       # ── 1. Checkout ────────────────────────────────────────────────────────
@@ -56,61 +55,71 @@ jobs:
 
           echo "$JSON_ARRAY" > /tmp/pr_files.json
 
-      # ── 3. Generate per-file title + summary via GitHub Models ─────────────
+      # ── 3. Generate per-file title + summary via Gemini 2.5 Flash ────────────
       #
-      #  The LLM is asked to return a JSON array — one object per file:
+      #  Provider : Google AI Studio (free tier — no credit card required)
+      #  Model    : gemini-2.5-flash  (free: ~10 RPM / 500 RPD)
+      #  Secret   : GEMINI_API_KEY  ← add this in repo Settings → Secrets
+      #
+      #  How to get a free GEMINI_API_KEY (2 minutes):
+      #    1. Go to https://aistudio.google.com/apikey
+      #    2. Sign in with your Google account
+      #    3. Click "Create API key" → copy the key (starts with AIza...)
+      #    4. Add it as GEMINI_API_KEY in repo Settings → Secrets and variables → Actions
+      #
+      #  The LLM returns a JSON array — one object per file:
       #    [{ "file": "path/to/file.md",
       #       "title": "Human-readable article title",
       #       "summary": "2-3 sentence summary" }, ...]
-      #
       # ─────────────────────────────────────────────────────────────────────────
-      - name: Generate per-file summaries via GitHub Models
+      - name: Generate per-file summaries via Gemini 2.5 Flash
         id: summary
         env:
-          GH_TOKEN:    ${{ github.token }}
-          WEBSITE_URL: ${{ vars.WEBSITE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          WEBSITE_URL:    ${{ vars.WEBSITE_URL }}
         run: |
           FILES_JSON=$(cat /tmp/pr_files.json)
 
-          PAYLOAD=$(jq -n \
+          # Gemini uses a single "text" field inside "parts" for the prompt.
+          # We combine system instruction and user content into one message
+          # since the generateContent endpoint handles it as a single turn.
+          PROMPT=$(jq -n \
             --argjson files "$FILES_JSON" \
             --arg url "$WEBSITE_URL" \
+            '"You are a technical writer for Alexandria, a data engineering knowledge base.\n\nFor each file below, extract the article title from the content (use the first H1 heading or the most prominent title — NOT the filename) and write a 2-3 sentence summary explaining what the article covers and why it is useful for data engineers.\n\nReturn ONLY a valid JSON array — no markdown, no code fences, no extra text:\n[\n  {\n    \"file\": \"<original file path>\",\n    \"title\": \"<article title from content>\",\n    \"summary\": \"<2-3 sentence summary>\"\n  }\n]\n\nFiles:\n" + ($files | tostring)')
+
+          PAYLOAD=$(jq -n \
+            --argjson prompt "$PROMPT" \
             '{
-              model: "meta/Llama-3.3-70B-Instruct",
-              max_tokens: 1024,
-              messages: [
-                {
-                  role: "system",
-                  content: "You are a technical writer for Alexandria, a data engineering knowledge base. Return only valid JSON — no markdown, no code fences, no extra text."
-                },
-                {
-                  role: "user",
-                  content: ("For each file below, extract the article title from the content (use the first H1 heading or the most prominent title in the text — NOT the filename) and write a 2-3 sentence summary explaining what the article covers and why it is useful for data engineers.\n\nReturn a JSON array with exactly one object per file:\n[\n  {\n    \"file\": \"<original file path>\",\n    \"title\": \"<article title from content>\",\n    \"summary\": \"<2-3 sentence summary>\"\n  }\n]\n\nFiles:\n" + ($files | tostring))
-                }
-              ]
+              contents: [{
+                parts: [{ text: $prompt }]
+              }],
+              generationConfig: {
+                temperature: 0.2,
+                maxOutputTokens: 1024
+              }
             }')
 
           RESPONSE=$(curl -s \
-            -X POST "https://models.inference.ai.azure.com/chat/completions" \
-            -H "Authorization: Bearer $GH_TOKEN" \
+            -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$GEMINI_API_KEY" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
 
           # Log the full API response for easier debugging in the Actions UI
-          echo "=== GitHub Models raw response ==="
+          echo "=== Gemini API raw response ==="
           echo "$RESPONSE" | jq .
-          echo "==================================="
+          echo "==============================="
 
           # Check for API-level errors first
           API_ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty')
           if [ -n "$API_ERROR" ]; then
-            echo "ERROR: GitHub Models API returned an error: $API_ERROR"
+            echo "ERROR: Gemini API returned an error: $API_ERROR"
             echo "[]" > /tmp/summaries.json
           else
-            # Extract the text reply from the first choice
-            RAW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // "[]"')
+            # Extract the text reply from the first candidate
+            RAW=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "[]"')
 
-            # Strip accidental markdown code fences without collapsing lines
+            # Strip any accidental markdown code fences without collapsing lines
             CLEAN=$(echo "$RAW" \
               | sed 's/^```json[[:space:]]*//' \
               | sed 's/^```[[:space:]]*//' \
