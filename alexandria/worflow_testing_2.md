@@ -15,8 +15,8 @@ This document outlines the Docker setup and workflow testing procedures.
 - Monitor container logs for workflow status and errors
 - Validate workflow outputs within the container environment
 
-### Docker Compose Configuration
+<!-- ### Docker Compose Configuration
 - Define services for each workflow component
 - Set up networking between containers
 - Configure volume mounts for data persistence
-- Test end-to-end workflows across multiple containers
+- Test end-to-end workflows across multiple containers -->

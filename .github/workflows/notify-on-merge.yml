@@ -13,6 +13,7 @@ jobs:
 
     permissions:
       contents: read
+      models: read       # required to call the GitHub Models inference API
 
     steps:
       # ── 1. Checkout ────────────────────────────────────────────────────────
@@ -95,15 +96,35 @@ jobs:
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
 
-          # Extract the raw text reply
-          RAW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // "[]"')
+          # Log the full API response for easier debugging in the Actions UI
+          echo "=== GitHub Models raw response ==="
+          echo "$RESPONSE" | jq .
+          echo "==================================="
 
-          # Strip any accidental markdown code fences the model may add
-          CLEAN=$(echo "$RAW" | sed 's/```json//g' | sed 's/```//g' | xargs)
+          # Check for API-level errors first
+          API_ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty')
+          if [ -n "$API_ERROR" ]; then
+            echo "ERROR: GitHub Models API returned an error: $API_ERROR"
+            echo "[]" > /tmp/summaries.json
+          else
+            # Extract the text reply from the first choice
+            RAW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // "[]"')
 
-          # Validate it's parseable JSON; fall back to empty array if not
-          echo "$CLEAN" | jq . > /tmp/summaries.json 2>/dev/null \
-            || echo "[]" > /tmp/summaries.json
+            # Strip accidental markdown code fences without collapsing lines
+            CLEAN=$(echo "$RAW" \
+              | sed 's/^```json[[:space:]]*//' \
+              | sed 's/^```[[:space:]]*//' \
+              | sed 's/[[:space:]]*```$//')
+
+            # Validate it is parseable JSON; fall back to empty array if not
+            if echo "$CLEAN" | jq . > /tmp/summaries.json 2>/dev/null; then
+              echo "Successfully parsed $(jq 'length' /tmp/summaries.json) article(s)."
+            else
+              echo "WARNING: Model response was not valid JSON. Raw output:"
+              echo "$CLEAN"
+              echo "[]" > /tmp/summaries.json
+            fi
+          fi
 
       # ── 4. Build ARTICLES_HTML and render the email template ───────────────
       - name: Render email from template
@@ -127,9 +148,13 @@ jobs:
           #   2. Strip the file extension
           #   3. Prepend WEBSITE_URL (trailing slash normalised)
           # Adjust the sed expression below if your site uses a different structure.
+          # Converts "content/pipelines/kafka-intro.md"
+          #       →  "https://yoursite.com/pipelines/kafka-intro"
+          # Strips a leading content/ or docs/ directory, then the file extension.
+          # Adjust the first sed expression if your repo uses a different root folder.
           derive_url() {
             local filepath="$1"
-            local base_url="${WEBSITE_URL%/}"   # remove trailing slash if any
+            local base_url="${WEBSITE_URL%/}"
             local page
             page=$(echo "$filepath" \
               | sed 's|^content/||; s|^docs/||' \
@@ -196,10 +221,10 @@ jobs:
           </div>"
 
           # Export vars for envsubst
-          export PR_TITLE MERGED_DATE WEBSITE_URL ARTICLES_HTML \
+          export MERGED_DATE WEBSITE_URL ARTICLES_HTML \
                  REPO_NAME CURRENT_YEAR
 
-          VARS='${PR_TITLE} ${MERGED_DATE} ${WEBSITE_URL} ${ARTICLES_HTML}
+          VARS='${MERGED_DATE} ${WEBSITE_URL} ${ARTICLES_HTML}
                 ${REPO_NAME} ${CURRENT_YEAR}'
 
           envsubst "$VARS" \
@@ -226,7 +251,7 @@ jobs:
           password:       ${{ secrets.SMTP_PASSWORD }}
           from:    "Alexandria – DE Knowledge Base <${{ secrets.MAIL_FROM }}>"
           to:      ${{ secrets.MAIL_TO }}
-          subject: "📖 Alexandria Knowledge Base — New Content Published"
+          subject: "📘 Alexandria – New Content Published on the Knowledge Base"
           html_body:  file:///tmp/email_body.html
           body:       file:///tmp/email_plain.txt
           ignore_cert: false
