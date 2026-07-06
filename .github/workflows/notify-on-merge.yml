@@ -132,8 +132,8 @@ jobs:
             local base_url="${WEBSITE_URL%/}"   # remove trailing slash if any
             local page
             page=$(echo "$filepath" \
-              | sed 's|^content/||; s|^docs/||' \   # strip common root dirs
-              | sed 's|\.[^.]*$||')                  # strip extension
+              | sed 's|^content/||; s|^docs/||' \
+              | sed 's|\.[^.]*$||')
             echo "${base_url}/${page}"
           }
 
