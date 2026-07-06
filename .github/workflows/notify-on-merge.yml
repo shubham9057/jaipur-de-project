@@ -203,7 +203,7 @@ jobs:
                 ${REPO_NAME} ${CURRENT_YEAR}'
 
           envsubst "$VARS" \
-            < .github/scripts/notify-on-merge.html \
+            < .github/email-templates/notify-on-merge.html \
             > /tmp/email_body.html
 
           # Plain-text fallback
