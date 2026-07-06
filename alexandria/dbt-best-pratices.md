@@ -35,8 +35,8 @@
 - Document changes in commit messages
 - Review code before merging to main branch
 
-<!-- ## 7. CI/CD Integration
+## 7. CI/CD Integration
 - Implement automated dbt runs on pull requests
 - Run all tests before production deployment
 - Use environment-specific configurations (dev, staging, prod)
-- Schedule regular full refreshes of models -->
+- Schedule regular full refreshes of models
