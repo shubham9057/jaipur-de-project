@@ -1,43 +1,73 @@
-name: Notify on Content Published
+name: Weekly Content Digest
 
 on:
-  pull_request:
-    types: [closed]
-    branches:
-      - main
+  schedule:
+    - cron: '0 9 * * 1'    # Every Monday at 09:00 UTC
+  workflow_dispatch:         # Allow manual trigger for testing
 
 jobs:
   notify:
-    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
 
     permissions:
-      contents: read
+      contents: write        # Needed to push the tracking tag after sending
 
     steps:
-      # ── 1. Checkout ────────────────────────────────────────────────────────
+      # ── 1. Checkout full history ───────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0     # Full history needed to read and compare tags
 
-      # ── 2. Collect changed files & their content ───────────────────────────
-      - name: Gather changed files
+      # ── 2. Find new content since last notification ────────────────────────
+      #
+      #  Uses a lightweight git tag "last-email-notification" as a bookmark.
+      #  - If the tag exists  → diff from that tag to HEAD
+      #  - If no tag yet      → look back 7 days (first ever run)
+      #  Exits early (no email sent) if no .md files changed.
+      # ─────────────────────────────────────────────────────────────────────────
+      - name: Find new content since last notification
         id: changed
         run: |
-          BASE=${{ github.event.pull_request.base.sha }}
-          HEAD=${{ github.event.pull_request.head.sha }}
+          # ── Determine the diff base ─────────────────────────────────────────
+          if git rev-parse "last-email-notification" >/dev/null 2>&1; then
+            BASE=$(git rev-parse "last-email-notification")
+            SINCE_LABEL="last notification tag"
+            echo "Found tag last-email-notification at $BASE"
+          else
+            BASE=$(git log --since="7 days ago" --format="%H" | tail -1)
+            SINCE_LABEL="7 days ago (first run — no tag found)"
+            echo "No tag found. Falling back to commits from last 7 days."
+            # If no commits in 7 days either, BASE will be empty
+            if [ -z "$BASE" ]; then
+              echo "No commits found in the last 7 days. Nothing to notify."
+              echo "has_content=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
 
-          FILES=$(git diff --name-only --diff-filter=AM "$BASE" "$HEAD" \
+          echo "Diffing from: $BASE ($SINCE_LABEL)"
+
+          # ── Find added/modified content files ──────────────────────────────
+          FILES=$(git diff --name-only --diff-filter=AM "$BASE" HEAD \
                   | grep -E '\.(md|mdx|txt|rst)$' \
                   | head -20)
+
+          if [ -z "$FILES" ]; then
+            echo "No new content files found since last notification. Skipping email."
+            echo "has_content=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "New files found:"
+          echo "$FILES"
 
           echo "files<<EOF" >> "$GITHUB_OUTPUT"
           echo "$FILES"     >> "$GITHUB_OUTPUT"
           echo "EOF"        >> "$GITHUB_OUTPUT"
+          echo "has_content=true" >> "$GITHUB_OUTPUT"
 
-          # Build a JSON array: [{file, content}, ...]
-          # Each file gets up to 3 KB of content
+          # ── Build JSON array [{file, content}, ...] for Gemini ─────────────
           JSON_ARRAY="["
           FIRST=true
           while IFS= read -r f; do
@@ -55,34 +85,18 @@ jobs:
 
           echo "$JSON_ARRAY" > /tmp/pr_files.json
 
-      # ── 3. Generate per-file title + summary via Gemini 2.5 Flash ────────────
-      #
-      #  Provider : Google AI Studio (free tier — no credit card required)
-      #  Model    : gemini-2.5-flash  (free: ~10 RPM / 500 RPD)
-      #  Secret   : GEMINI_API_KEY  ← add this in repo Settings → Secrets
-      #
-      #  How to get a free GEMINI_API_KEY (2 minutes):
-      #    1. Go to https://aistudio.google.com/apikey
-      #    2. Sign in with your Google account
-      #    3. Click "Create API key" → copy the key (starts with AIza...)
-      #    4. Add it as GEMINI_API_KEY in repo Settings → Secrets and variables → Actions
-      #
-      #  The LLM returns a JSON array — one object per file:
-      #    [{ "file": "path/to/file.md",
-      #       "title": "Human-readable article title",
-      #       "summary": "2-3 sentence summary" }, ...]
+      # ── 3. Generate per-file title + summary via Gemini 2.5 Flash ──────────
+      #  Skipped automatically if has_content is false.
       # ─────────────────────────────────────────────────────────────────────────
       - name: Generate per-file summaries via Gemini 2.5 Flash
         id: summary
+        if: steps.changed.outputs.has_content == 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           WEBSITE_URL:    ${{ vars.WEBSITE_URL }}
         run: |
           FILES_JSON=$(cat /tmp/pr_files.json)
 
-          # Gemini uses a single "text" field inside "parts" for the prompt.
-          # We combine system instruction and user content into one message
-          # since the generateContent endpoint handles it as a single turn.
           PROMPT=$(jq -n \
             --argjson files "$FILES_JSON" \
             --arg url "$WEBSITE_URL" \
@@ -105,27 +119,21 @@ jobs:
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
 
-          # Log the full API response for easier debugging in the Actions UI
           echo "=== Gemini API raw response ==="
           echo "$RESPONSE" | jq .
           echo "==============================="
 
-          # Check for API-level errors first
           API_ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty')
           if [ -n "$API_ERROR" ]; then
             echo "ERROR: Gemini API returned an error: $API_ERROR"
             echo "[]" > /tmp/summaries.json
           else
-            # Extract the text reply from the first candidate
             RAW=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "[]"')
-
-            # Strip any accidental markdown code fences without collapsing lines
             CLEAN=$(echo "$RAW" \
               | sed 's/^```json[[:space:]]*//' \
               | sed 's/^```[[:space:]]*//' \
               | sed 's/[[:space:]]*```$//')
 
-            # Validate it is parseable JSON; fall back to empty array if not
             if echo "$CLEAN" | jq . > /tmp/summaries.json 2>/dev/null; then
               echo "Successfully parsed $(jq 'length' /tmp/summaries.json) article(s)."
             else
@@ -137,30 +145,14 @@ jobs:
 
       # ── 4. Build ARTICLES_HTML and render the email template ───────────────
       - name: Render email from template
+        if: steps.changed.outputs.has_content == 'true'
         env:
-          PR_TITLE:    ${{ github.event.pull_request.title }}
-          PR_URL:      ${{ github.event.pull_request.html_url }}
-          MERGED_AT:   ${{ github.event.pull_request.merged_at }}
           WEBSITE_URL: ${{ vars.WEBSITE_URL }}
           REPO_NAME:   ${{ github.repository }}
         run: |
-          MERGED_DATE=$(date -d "$MERGED_AT" "+%B %d, %Y at %H:%M UTC" 2>/dev/null \
-                        || echo "$MERGED_AT")
+          MERGED_DATE=$(date "+%B %d, %Y")
           CURRENT_YEAR=$(date +%Y)
 
-          # ── Derive a page URL from a file path ──────────────────────────
-          # Converts  "content/pipelines/kafka-intro.md"
-          #       →   "https://yoursite.com/pipelines/kafka-intro"
-          #
-          # Rules applied in order:
-          #   1. Strip a leading content/ or docs/ directory if present
-          #   2. Strip the file extension
-          #   3. Prepend WEBSITE_URL (trailing slash normalised)
-          # Adjust the sed expression below if your site uses a different structure.
-          # Converts "content/pipelines/kafka-intro.md"
-          #       →  "https://yoursite.com/pipelines/kafka-intro"
-          # Strips a leading content/ or docs/ directory, then the file extension.
-          # Adjust the first sed expression if your repo uses a different root folder.
           derive_url() {
             local filepath="$1"
             local base_url="${WEBSITE_URL%/}"
@@ -168,27 +160,24 @@ jobs:
             page=$(echo "$filepath" \
               | sed 's|^content/||; s|^docs/||' \
               | sed 's|\.[^.]*$||')
-            echo "${base_url}/${page}"
+            echo "${base_url}/${page}.html"
           }
 
-          # ── Build one HTML block per article ────────────────────────────
           ARTICLES_HTML=""
           COUNT=$(jq 'length' /tmp/summaries.json)
 
           if [ "$COUNT" -eq 0 ]; then
-            # Graceful fallback — no per-file data available
             ARTICLES_HTML='<p style="font-size:15px;line-height:1.75;color:#374151;">
               New content has been published to the knowledge base.
               Visit the website to see what is new.
             </p>'
           else
             for i in $(seq 0 $(( COUNT - 1 )) ); do
-              FILE=$(jq -r ".[$i].file"    /tmp/summaries.json)
-              TITLE=$(jq -r ".[$i].title"  /tmp/summaries.json)
+              FILE=$(jq -r  ".[$i].file"    /tmp/summaries.json)
+              TITLE=$(jq -r ".[$i].title"   /tmp/summaries.json)
               SUMM=$(jq -r  ".[$i].summary" /tmp/summaries.json)
               PAGE_URL=$(derive_url "$FILE")
 
-              # Add a divider between articles (not before the first one)
               if [ "$i" -gt 0 ]; then
                 ARTICLES_HTML+='<hr style="border:none;border-top:1px solid #E5E7EB;margin:0 0 24px;"/>'
               fi
@@ -212,7 +201,6 @@ jobs:
             done
           fi
 
-          # Append the main CTA button after all articles
           ARTICLES_HTML+="
           <div style=\"margin:32px 0 36px;\">
             <table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\">
@@ -229,9 +217,7 @@ jobs:
             </table>
           </div>"
 
-          # Export vars for envsubst
-          export MERGED_DATE WEBSITE_URL ARTICLES_HTML \
-                 REPO_NAME CURRENT_YEAR
+          export MERGED_DATE WEBSITE_URL ARTICLES_HTML REPO_NAME CURRENT_YEAR
 
           VARS='${MERGED_DATE} ${WEBSITE_URL} ${ARTICLES_HTML}
                 ${REPO_NAME} ${CURRENT_YEAR}'
@@ -240,18 +226,18 @@ jobs:
             < .github/scripts/notify-on-merge.html \
             > /tmp/email_body.html
 
-          # Plain-text fallback
           {
-            echo "New Content Published – ${PR_TITLE}"
+            echo "Alexandria – New Content Published"
             echo ""
             jq -r '.[] | "## \(.title)\n\(.summary)\n"' /tmp/summaries.json
             echo "Visit the knowledge base: ${WEBSITE_URL}"
             echo ""
-            echo "Published on ${MERGED_DATE}"
+            echo "Week of ${MERGED_DATE}"
           } > /tmp/email_plain.txt
 
       # ── 5. Send the email ──────────────────────────────────────────────────
       - name: Send notification email
+        if: steps.changed.outputs.has_content == 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_HOST }}
@@ -266,3 +252,23 @@ jobs:
           ignore_cert: false
           convert_markdown: false
           priority: normal
+
+      # ── 6. Update the tracking tag ─────────────────────────────────────────
+      #
+      #  Only runs after a successful email send.
+      #  Moves "last-email-notification" to the current HEAD so next week's
+      #  run knows exactly where to diff from.
+      # ─────────────────────────────────────────────────────────────────────────
+      - name: Update last-email-notification tag
+        if: steps.changed.outputs.has_content == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Force-update the tag to current HEAD
+          git tag -f last-email-notification HEAD
+
+          # Push the updated tag back to the repo
+          git push --force origin last-email-notification
+
+          echo "✅ Tag last-email-notification updated to $(git rev-parse HEAD)"
