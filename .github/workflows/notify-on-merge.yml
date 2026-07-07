@@ -160,7 +160,7 @@ jobs:
             page=$(echo "$filepath" \
               | sed 's|^content/||; s|^docs/||' \
               | sed 's|\.[^.]*$||')
-            echo "${base_url}/${page}"
+            echo "${base_url}/${page}.html"
           }
 
           ARTICLES_HTML=""
