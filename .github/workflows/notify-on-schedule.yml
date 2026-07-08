@@ -138,6 +138,7 @@ jobs:
                 thinkingConfig: {
                   thinkingBudget: 0
                 }
+                }
             }')
 
           RESPONSE=$(curl -s \
