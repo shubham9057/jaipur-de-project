@@ -71,7 +71,7 @@ jobs:
           # ── Step 2e: find added/modified content files ─────────────────────
           FILES=$(git diff --name-only --diff-filter=A "$BASE" "$HEAD_SHA" \
                   | grep -E '\.md$' \
-                  | grep -E '^topics/' \
+                  | grep -E '^alexandria/' \
                   | head -20)
  
           echo "--- Changed content files ---"
