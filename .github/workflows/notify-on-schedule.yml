@@ -2,7 +2,7 @@ name: Weekly Content Digest
 
 on:
   schedule:
-    - cron: '0 9 * * 1'    # Every Monday at 09:00 UTC
+    - cron: '30 11 * * 1'    # Every Monday at 11:30 UTC
   workflow_dispatch:         # Allow manual trigger for testing
 
 jobs:
@@ -29,45 +29,67 @@ jobs:
       - name: Find new content since last notification
         id: changed
         run: |
-          # ── Determine the diff base ─────────────────────────────────────────
-          if git rev-parse "last-email-notification" >/dev/null 2>&1; then
-            BASE=$(git rev-parse "last-email-notification")
-            SINCE_LABEL="last notification tag"
-            echo "Found tag last-email-notification at $BASE"
+          # ── Step 2a: explicitly fetch all tags ─────────────────────────────
+          echo "--- Fetching all tags ---"
+          git fetch --tags --force
+          echo "Tags available:"
+          git tag -l
+ 
+          # ── Step 2b: resolve HEAD SHA ───────────────────────────────────────
+          HEAD_SHA=$(git rev-parse HEAD)
+          echo "HEAD SHA: $HEAD_SHA"
+ 
+          # ── Step 2c: determine the diff BASE ───────────────────────────────
+          if git rev-parse "refs/tags/last-email-notification" >/dev/null 2>&1; then
+            BASE=$(git rev-parse "refs/tags/last-email-notification")
+            SINCE_LABEL="last-email-notification tag"
+            echo "Found tag at: $BASE"
           else
-            BASE=$(git log --since="7 days ago" --format="%H" | tail -1)
-            SINCE_LABEL="7 days ago (first run — no tag found)"
-            echo "No tag found. Falling back to commits from last 7 days."
-            # If no commits in 7 days either, BASE will be empty
+            echo "No tag found — this is the first run. Falling back to 7 days ago."
+            # Get the SHA of the oldest commit within the last 7 days
+            BASE=$(git log main --since="7 days ago" --format="%H" | tail -1)
+ 
             if [ -z "$BASE" ]; then
-              echo "No commits found in the last 7 days. Nothing to notify."
-              echo "has_content=false" >> "$GITHUB_OUTPUT"
-              exit 0
+              echo "No commits found in the last 7 days."
+              echo "Falling back to the very first commit in the repo."
+              BASE=$(git rev-list --max-parents=0 HEAD)
             fi
+            SINCE_LABEL="7 days ago fallback"
           fi
-
-          echo "Diffing from: $BASE ($SINCE_LABEL)"
-
-          # ── Find added/modified content files ──────────────────────────────
-          FILES=$(git diff --name-only --diff-filter=AM "$BASE" HEAD \
-                  | grep -E '\.(md|mdx|txt|rst)$' \
-                  | head -20)
-
-          if [ -z "$FILES" ]; then
-            echo "No new content files found since last notification. Skipping email."
+ 
+          echo "BASE SHA : $BASE"
+          echo "HEAD SHA : $HEAD_SHA"
+          echo "Diff range: $BASE → $HEAD_SHA"
+ 
+          # ── Step 2d: guard — nothing to diff if BASE equals HEAD ───────────
+          if [ "$BASE" = "$HEAD_SHA" ]; then
+            echo "BASE and HEAD are the same commit — no new content. Skipping email."
             echo "has_content=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
-          echo "New files found:"
-          echo "$FILES"
-
+ 
+          # ── Step 2e: find added/modified content files ─────────────────────
+          FILES=$(git diff --name-only --diff-filter=A "$BASE" "$HEAD_SHA" \
+                  | grep -E '\.md$' \
+                  | grep -E '^topics/' \
+                  | head -20)
+ 
+          echo "--- Changed content files ---"
+          echo "${FILES:-  (none found)}"
+          echo "-----------------------------"
+ 
+          if [ -z "$FILES" ]; then
+            echo "No new content files found since $SINCE_LABEL. Skipping email."
+            echo "has_content=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+ 
           echo "files<<EOF" >> "$GITHUB_OUTPUT"
           echo "$FILES"     >> "$GITHUB_OUTPUT"
           echo "EOF"        >> "$GITHUB_OUTPUT"
           echo "has_content=true" >> "$GITHUB_OUTPUT"
-
-          # ── Build JSON array [{file, content}, ...] for Gemini ─────────────
+ 
+          # ── Step 2f: build JSON array [{file, content}, ...] for Gemini ────
           JSON_ARRAY="["
           FIRST=true
           while IFS= read -r f; do
@@ -82,8 +104,9 @@ jobs:
             fi
           done <<< "$FILES"
           JSON_ARRAY+="]"
-
+ 
           echo "$JSON_ARRAY" > /tmp/pr_files.json
+          echo "JSON payload written to /tmp/pr_files.json"
 
       # ── 3. Generate per-file title + summary via Gemini 2.5 Flash ──────────
       #  Skipped automatically if has_content is false.
@@ -100,7 +123,7 @@ jobs:
           PROMPT=$(jq -n \
             --argjson files "$FILES_JSON" \
             --arg url "$WEBSITE_URL" \
-            '"You are a technical writer for Alexandria, a data engineering knowledge base.\n\nFor each file below, extract the article title from the content (use the first H1 heading or the most prominent title — NOT the filename) and write a 2-3 sentence summary explaining what the article covers and why it is useful for data engineers.\n\nReturn ONLY a valid JSON array — no markdown, no code fences, no extra text:\n[\n  {\n    \"file\": \"<original file path>\",\n    \"title\": \"<article title from content>\",\n    \"summary\": \"<2-3 sentence summary>\"\n  }\n]\n\nFiles:\n" + ($files | tostring)')
+            '"You are a technical writer for Alexandria, a data engineering knowledge base.\n\nFor each file below, extract the KB article title from the content (use the first H1 heading or the most prominent title — NOT the filename) and write a 2-3 sentence summary explaining what the KB article covers and why it is useful for data engineers.\n\nReturn ONLY a valid JSON array — no markdown, no code fences, no extra text:\n[\n  {\n    \"file\": \"<original file path>\",\n    \"title\": \"<article title from content>\",\n    \"summary\": \"<2-3 sentence summary>\"\n  }\n]\n\nFiles:\n" + ($files | tostring)')
 
           PAYLOAD=$(jq -n \
             --argjson prompt "$PROMPT" \
@@ -110,8 +133,11 @@ jobs:
               }],
               generationConfig: {
                 temperature: 0.2,
-                maxOutputTokens: 1024
-              }
+                maxOutputTokens: 8192,
+                responseMimeType: "application/json",
+                thinkingConfig: {
+                  thinkingBudget: 0
+                }
             }')
 
           RESPONSE=$(curl -s \
@@ -148,17 +174,18 @@ jobs:
         if: steps.changed.outputs.has_content == 'true'
         env:
           WEBSITE_URL: ${{ vars.WEBSITE_URL }}
-          REPO_NAME:   ${{ github.repository }}
         run: |
-          MERGED_DATE=$(date "+%B %d, %Y")
-          CURRENT_YEAR=$(date +%Y)
+          WEEK_DATE=$(date "+%B %d, %Y")
+
+          # Output date so Step 5 can use them in the subject line
+          echo "week_date=$WEEK_DATE"    >> "$GITHUB_OUTPUT"
 
           derive_url() {
             local filepath="$1"
             local base_url="${WEBSITE_URL%/}"
             local page
             page=$(echo "$filepath" \
-              | sed 's|^content/||; s|^docs/||' \
+              | cut -d'/' -f2- \
               | sed 's|\.[^.]*$||')
             echo "${base_url}/${page}.html"
           }
@@ -195,7 +222,7 @@ jobs:
                    style=\"display:inline-block;padding:9px 20px;font-size:13px;font-weight:600;
                            color:#2563EB;text-decoration:none;border:2px solid #2563EB;
                            border-radius:6px;\">
-                  Read Article &rarr;
+                  Read KB Article &rarr;
                 </a>
               </div>"
             done
@@ -217,10 +244,9 @@ jobs:
             </table>
           </div>"
 
-          export MERGED_DATE WEBSITE_URL ARTICLES_HTML REPO_NAME CURRENT_YEAR
+          export WEEK_DATE WEBSITE_URL ARTICLES_HTML
 
-          VARS='${MERGED_DATE} ${WEBSITE_URL} ${ARTICLES_HTML}
-                ${REPO_NAME} ${CURRENT_YEAR}'
+          VARS='${WEEK_DATE} ${WEBSITE_URL} ${ARTICLES_HTML}'
 
           envsubst "$VARS" \
             < .github/scripts/notify-on-merge.html \
@@ -232,7 +258,7 @@ jobs:
             jq -r '.[] | "## \(.title)\n\(.summary)\n"' /tmp/summaries.json
             echo "Visit the knowledge base: ${WEBSITE_URL}"
             echo ""
-            echo "Week of ${MERGED_DATE}"
+            echo "${WEEK_DATE}"
           } > /tmp/email_plain.txt
 
       # ── 5. Send the email ──────────────────────────────────────────────────
@@ -246,7 +272,7 @@ jobs:
           password:       ${{ secrets.SMTP_PASSWORD }}
           from:    "Alexandria – DE Knowledge Base <${{ secrets.MAIL_FROM }}>"
           to:      ${{ secrets.MAIL_TO }}
-          subject: "📘 Alexandria – New Content Published on the Knowledge Base"
+          subject: "📘 Alexandria – New Content Published | ${{ steps.render.outputs.week_date }}"
           html_body:  file:///tmp/email_body.html
           body:       file:///tmp/email_plain.txt
           ignore_cert: false
