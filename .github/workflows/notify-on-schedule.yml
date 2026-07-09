@@ -71,7 +71,7 @@ jobs:
           # ── Step 2e: find newly added content files in BASE..HEAD ─────────
           # Parse name-status to keep only truly added files (A) in this range.
           FILES=$(git diff --name-status --diff-filter=A "$BASE" "$HEAD_SHA" \
-            | awk '$1 == "A" && $2 ~ /^topics\/.*\.md$/ { print $2 }' \
+            | awk '$1 == "A" && $2 ~ /^alexandria\/.*\.md$/ { print $2 }' \
             | sort -u \
             | head -20)
  
