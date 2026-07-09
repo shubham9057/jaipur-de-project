@@ -68,12 +68,21 @@ jobs:
             exit 0
           fi
  
-          # ── Step 2e: find newly added content files in BASE..HEAD ─────────
-          # Parse name-status to keep only truly added files (A) in this range.
-          FILES=$(git diff --name-status --diff-filter=A "$BASE" "$HEAD_SHA" \
-            | awk '$1 == "A" && $2 ~ /^alexandria\/.*\.md$/ { print $2 }' \
-            | sort -u \
-            | head -20)
+          # ── Step 2e: find newly added .md files in BASE..HEAD ──────────────
+          echo "--- Raw git log output (before filter) ---"
+          git log --diff-filter=A --name-only --pretty=format: "$BASE..$HEAD_SHA" \
+            | grep -v '^$' || true
+          echo "-------------------------------------------"
+ 
+          FILES=$(git log --diff-filter=A --name-only --pretty=format: \
+                    "$BASE..$HEAD_SHA" \
+                  | grep -E '^alexandria/.*\.md$' \
+                  | sort -u \
+                  | head -20)
+ 
+          echo "--- Filtered newly added .md files ---"
+          echo "${FILES:-  (none found)}"
+          echo "--------------------------------------"
  
           echo "--- Changed content files ---"
           echo "${FILES:-  (none found)}"
@@ -295,9 +304,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           # Force-update the tag to current HEAD
-          git tag -f last-email-notification HEAD
+          # git tag -f last-email-notification HEAD
 
           # Push the updated tag back to the repo
-          git push --force origin last-email-notification
+          # git push --force origin last-email-notification
 
-          echo "✅ Tag last-email-notification updated to $(git rev-parse HEAD)"
+          # echo "✅ Tag last-email-notification updated to $(git rev-parse HEAD)"
