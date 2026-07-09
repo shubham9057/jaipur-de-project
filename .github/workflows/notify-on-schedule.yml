@@ -172,6 +172,7 @@ jobs:
 
       # ── 4. Build ARTICLES_HTML and render the email template ───────────────
       - name: Render email from template
+        id: render
         if: steps.changed.outputs.has_content == 'true'
         env:
           WEBSITE_URL: ${{ vars.WEBSITE_URL }}
