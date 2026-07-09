@@ -10,4 +10,3 @@ This workflow tests the connection and data query execution against Snowflake da
 
 ### Expected Outcomes
 - Connection successful to Snowflake account
-- Query execution completes without errors
