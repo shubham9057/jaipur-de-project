@@ -68,11 +68,12 @@ jobs:
             exit 0
           fi
  
-          # ── Step 2e: find added/modified content files ─────────────────────
-          FILES=$(git diff --name-only --diff-filter=A "$BASE" "$HEAD_SHA" \
-                  | grep -E '\.md$' \
-                  | grep -E '^alexandria/' \
-                  | head -20)
+          # ── Step 2e: find newly added content files in BASE..HEAD ─────────
+          # Only include files that are newly introduced in this range.
+          FILES=$(git diff --name-only --diff-filter=A "$BASE...$HEAD_SHA" \
+                | grep -E '\.md$' \
+                | grep -E '^topics/' \
+                | head -20)
  
           echo "--- Changed content files ---"
           echo "${FILES:-  (none found)}"
