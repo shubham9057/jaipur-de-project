@@ -69,11 +69,11 @@ jobs:
           fi
  
           # ── Step 2e: find newly added content files in BASE..HEAD ─────────
-          # Only include files that are newly introduced in this range.
-          FILES=$(git diff --name-only --diff-filter=A "$BASE...$HEAD_SHA" \
-                | grep -E '\.md$' \
-                | grep -E '^alexandria/' \
-                | head -20)
+          # Parse name-status to keep only truly added files (A) in this range.
+          FILES=$(git diff --name-status --diff-filter=A "$BASE" "$HEAD_SHA" \
+            | awk '$1 == "A" && $2 ~ /^topics\/.*\.md$/ { print $2 }' \
+            | sort -u \
+            | head -20)
  
           echo "--- Changed content files ---"
           echo "${FILES:-  (none found)}"
