@@ -72,7 +72,7 @@ jobs:
           # Only include files that are newly introduced in this range.
           FILES=$(git diff --name-only --diff-filter=A "$BASE...$HEAD_SHA" \
                 | grep -E '\.md$' \
-                | grep -E '^topics/' \
+                | grep -E '^alexandria/' \
                 | head -20)
  
           echo "--- Changed content files ---"
