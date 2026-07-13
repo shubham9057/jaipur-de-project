@@ -2,7 +2,7 @@ name: Weekly Content Digest
 
 on:
   schedule:
-    - cron: '30 11 * * 1'    # Every Monday at 11:30 UTC
+    - cron: '33 10 * * 1'    # Every Monday at 11:30 UTC, changed for testing
   workflow_dispatch:         # Allow manual trigger for testing
 
 jobs:
